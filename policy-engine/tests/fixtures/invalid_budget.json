@@ -1,0 +1,138 @@
+{
+  "format_version": "1.2",
+  "terraform_version": "1.7.0",
+  "resource_changes": [
+    {
+      "address": "google_sql_database_instance.primary",
+      "type": "google_sql_database_instance",
+      "name": "primary",
+      "change": {
+        "actions": ["create"],
+        "after": {
+          "name": "acme-db-primary",
+          "region": "europe-west1"
+        }
+      }
+    },
+    {
+      "address": "google_sql_database_instance.replica",
+      "type": "google_sql_database_instance",
+      "name": "replica",
+      "change": {
+        "actions": ["create"],
+        "after": {
+          "name": "acme-db-replica",
+          "region": "europe-west1"
+        }
+      }
+    },
+    {
+      "address": "google_sql_database_instance.analytics",
+      "type": "google_sql_database_instance",
+      "name": "analytics",
+      "change": {
+        "actions": ["create"],
+        "after": {
+          "name": "acme-db-analytics",
+          "region": "europe-west1"
+        }
+      }
+    },
+    {
+      "address": "google_sql_database_instance.staging",
+      "type": "google_sql_database_instance",
+      "name": "staging",
+      "change": {
+        "actions": ["create"],
+        "after": {
+          "name": "acme-db-staging",
+          "region": "europe-west1"
+        }
+      }
+    },
+    {
+      "address": "google_sql_database_instance.dev",
+      "type": "google_sql_database_instance",
+      "name": "dev",
+      "change": {
+        "actions": ["create"],
+        "after": {
+          "name": "acme-db-dev",
+          "region": "europe-west1"
+        }
+      }
+    },
+    {
+      "address": "google_sql_database_instance.reporting",
+      "type": "google_sql_database_instance",
+      "name": "reporting",
+      "change": {
+        "actions": ["create"],
+        "after": {
+          "name": "acme-db-reporting",
+          "region": "europe-west1"
+        }
+      }
+    },
+    {
+      "address": "google_sql_database_instance.backup",
+      "type": "google_sql_database_instance",
+      "name": "backup",
+      "change": {
+        "actions": ["create"],
+        "after": {
+          "name": "acme-db-backup",
+          "region": "europe-west1"
+        }
+      }
+    },
+    {
+      "address": "google_sql_database_instance.testing",
+      "type": "google_sql_database_instance",
+      "name": "testing",
+      "change": {
+        "actions": ["create"],
+        "after": {
+          "name": "acme-db-testing",
+          "region": "europe-west1"
+        }
+      }
+    },
+    {
+      "address": "google_sql_database_instance.cache",
+      "type": "google_sql_database_instance",
+      "name": "cache",
+      "change": {
+        "actions": ["create"],
+        "after": {
+          "name": "acme-db-cache",
+          "region": "europe-west1"
+        }
+      }
+    },
+    {
+      "address": "google_sql_database_instance.logs",
+      "type": "google_sql_database_instance",
+      "name": "logs",
+      "change": {
+        "actions": ["create"],
+        "after": {
+          "name": "acme-db-logs",
+          "region": "europe-west1"
+        }
+      }
+    },
+    {
+      "address": "google_sql_database_instance.events",
+      "type": "google_sql_database_instance",
+      "name": "events",
+      "change": {
+        "actions": ["create"],
+        "after": {
+          "name": "acme-db-events",
+          "region": "europe-west1"
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,38 @@
+{
+  "format_version": "1.2",
+  "terraform_version": "1.7.0",
+  "resource_changes": [
+    {
+      "address": "google_compute_instance.us_server",
+      "type": "google_compute_instance",
+      "name": "us_server",
+      "change": {
+        "actions": ["create"],
+        "after": {
+          "name": "acme-us-server",
+          "machine_type": "e2-medium",
+          "zone": "us-central1-a",
+          "labels": {},
+          "guest_accelerator": []
+        }
+      }
+    },
+    {
+      "address": "google_storage_bucket.us_bucket",
+      "type": "google_storage_bucket",
+      "name": "us_bucket",
+      "change": {
+        "actions": ["create"],
+        "after": {
+          "name": "acme-us-bucket",
+          "location": "us-central1",
+          "encryption": [
+            {
+              "default_kms_key_name": "projects/acme-project/locations/us-central1/keyRings/main/cryptoKeys/bucket-key"
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

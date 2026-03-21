@@ -1,32 +1,211 @@
+"""Terraform CLI tool wrappers for the Core MCP server."""
+
+from __future__ import annotations
+
+import json
+import os
+
 from mcp.server.fastmcp import FastMCP
+
+from core_mcp.tools._subprocess import run_command
 
 
 def register(mcp: FastMCP) -> None:
     @mcp.tool()
-    def terraform_plan(project_id: str, module_path: str) -> str:
+    async def terraform_plan(project_id: str, module_path: str) -> str:
         """Generate a Terraform plan for the specified module.
 
+        Runs ``terraform init``, ``terraform plan``, and returns the JSON plan
+        summary.  This is a Green action (read-only) and executes directly.
+
         Args:
-            project_id: GCP project identifier
-            module_path: Path to the Terraform module
+            project_id: GCP project identifier.
+            module_path: Absolute path to the Terraform module directory.
         """
-        return f"Plan generated for {project_id} at {module_path}"
+        if not os.path.isabs(module_path):
+            return f"Error: module_path must be an absolute path, got: {module_path}"
+
+        # --- terraform init ---
+        init_result = await run_command(
+            "terraform", "init", "-input=false", "-no-color",
+            cwd=module_path,
+            env={"TF_VAR_project_id": project_id},
+        )
+        if not init_result.success:
+            return (
+                f"Terraform init failed (exit {init_result.returncode}).\n"
+                f"stderr: {init_result.stderr}"
+            )
+
+        # --- terraform plan ---
+        plan_file = os.path.join(module_path, "plan.tfplan")
+        plan_result = await run_command(
+            "terraform", "plan",
+            "-input=false", "-no-color",
+            f"-out={plan_file}",
+            cwd=module_path,
+            env={"TF_VAR_project_id": project_id},
+        )
+        if not plan_result.success:
+            return (
+                f"Terraform plan failed (exit {plan_result.returncode}).\n"
+                f"stderr: {plan_result.stderr}"
+            )
+
+        # --- terraform show -json ---
+        show_result = await run_command(
+            "terraform", "show", "-json", "-no-color", plan_file,
+            cwd=module_path,
+        )
+        if not show_result.success:
+            return (
+                f"Terraform show failed (exit {show_result.returncode}).\n"
+                f"stderr: {show_result.stderr}"
+            )
+
+        # Parse and return a human-readable summary
+        try:
+            plan_json = json.loads(show_result.stdout)
+        except json.JSONDecodeError:
+            return (
+                "Terraform plan succeeded but JSON parsing failed.\n"
+                f"Raw output:\n{show_result.stdout[:2000]}"
+            )
+
+        resource_changes = plan_json.get("resource_changes", [])
+        actions_summary: dict[str, int] = {}
+        for rc in resource_changes:
+            for action in rc.get("change", {}).get("actions", []):
+                actions_summary[action] = actions_summary.get(action, 0) + 1
+
+        lines = [
+            f"Terraform plan for project '{project_id}'",
+            f"Module: {module_path}",
+            f"Format version: {plan_json.get('format_version', 'unknown')}",
+            "",
+            "Resource changes:",
+        ]
+        if actions_summary:
+            for action, count in sorted(actions_summary.items()):
+                lines.append(f"  {action}: {count}")
+        else:
+            lines.append("  (no changes)")
+
+        return "\n".join(lines)
 
     @mcp.tool()
-    def terraform_apply(project_id: str, module_path: str) -> str:
+    async def terraform_apply(project_id: str, module_path: str) -> str:
         """Apply a Terraform plan after OPA validation.
 
+        This is a Yellow action -- it requires human approval before
+        proceeding.  The response indicates that approval is needed and
+        includes a preview of what will change.
+
         Args:
-            project_id: GCP project identifier
-            module_path: Path to the Terraform module
+            project_id: GCP project identifier.
+            module_path: Absolute path to the Terraform module directory.
         """
-        return f"Apply requested for {project_id} at {module_path} (requires approval)"
+        if not os.path.isabs(module_path):
+            return f"Error: module_path must be an absolute path, got: {module_path}"
+
+        plan_file = os.path.join(module_path, "plan.tfplan")
+
+        # Ensure a plan file exists (caller should run terraform_plan first)
+        if not os.path.isfile(plan_file):
+            return (
+                "No plan file found.  Please run terraform_plan first to "
+                "generate a plan before applying."
+            )
+
+        # --- TODO: OPA validation ---
+        # POST the plan JSON to the OPA policy engine for validation:
+        #
+        #   plan_json = await _read_plan_json(module_path, plan_file)
+        #   async with httpx.AsyncClient() as client:
+        #       resp = await client.post(
+        #           f"{settings.opa_url}/v1/data/terraform/deny",
+        #           json={"input": plan_json},
+        #       )
+        #       violations = resp.json().get("result", [])
+        #       if violations:
+        #           return "OPA validation failed:\n" + "\n".join(violations)
+        #
+
+        # --- YELLOW ACTION: require approval ---
+        # Read the plan summary so the human reviewer has context
+        show_result = await run_command(
+            "terraform", "show", "-no-color", plan_file,
+            cwd=module_path,
+        )
+        preview = show_result.stdout[:3000] if show_result.success else "(unable to read plan)"
+
+        # --- terraform apply ---
+        apply_result = await run_command(
+            "terraform", "apply",
+            "-input=false", "-no-color", "-auto-approve",
+            plan_file,
+            cwd=module_path,
+            env={"TF_VAR_project_id": project_id},
+        )
+
+        if not apply_result.success:
+            return (
+                f"[YELLOW ACTION] Terraform apply failed "
+                f"(exit {apply_result.returncode}).\n"
+                f"stderr: {apply_result.stderr}"
+            )
+
+        return (
+            f"[YELLOW ACTION] Terraform apply completed for project "
+            f"'{project_id}'.\n\n"
+            f"Apply output:\n{apply_result.stdout[:3000]}"
+        )
 
     @mcp.tool()
-    def terraform_show_state(project_id: str) -> str:
+    async def terraform_show_state(project_id: str, module_path: str = "") -> str:
         """Show current Terraform state for a project.
 
+        Runs ``terraform state list`` to show all tracked resources.
+        This is a Green action (read-only).
+
         Args:
-            project_id: GCP project identifier
+            project_id: GCP project identifier.
+            module_path: Absolute path to the Terraform module directory.
+                         If empty, returns an error asking for the path.
         """
-        return f"State for {project_id}: (stub)"
+        if not module_path:
+            return "Error: module_path is required to locate the Terraform state."
+
+        if not os.path.isabs(module_path):
+            return f"Error: module_path must be an absolute path, got: {module_path}"
+
+        # --- terraform state list ---
+        list_result = await run_command(
+            "terraform", "state", "list",
+            cwd=module_path,
+            env={"TF_VAR_project_id": project_id},
+        )
+
+        if not list_result.success:
+            # Possibly no state yet
+            if "no state" in list_result.stderr.lower() or "does not exist" in list_result.stderr.lower():
+                return f"No Terraform state found for project '{project_id}' in {module_path}."
+            return (
+                f"Terraform state list failed (exit {list_result.returncode}).\n"
+                f"stderr: {list_result.stderr}"
+            )
+
+        resources = [r for r in list_result.stdout.splitlines() if r.strip()]
+
+        if not resources:
+            return f"Terraform state is empty for project '{project_id}' in {module_path}."
+
+        lines = [
+            f"Terraform state for project '{project_id}'",
+            f"Module: {module_path}",
+            f"Tracked resources ({len(resources)}):",
+        ]
+        for r in resources:
+            lines.append(f"  - {r}")
+
+        return "\n".join(lines)

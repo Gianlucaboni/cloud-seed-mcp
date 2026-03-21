@@ -47,3 +47,4 @@ service-account*.json
 # Logs
 *.log
 logs/
+newgoogle.txt

@@ -1,0 +1,73 @@
+services:
+  core-mcp:
+    build: ./core-mcp
+    ports:
+      - "8000:8000"
+    depends_on:
+      state-store:
+        condition: service_healthy
+      opa:
+        condition: service_healthy
+    environment:
+      - CORE_MCP_OPA_URL=${CORE_MCP_OPA_URL}
+      - CORE_MCP_DATABASE_URL=${CORE_MCP_DATABASE_URL}
+      - CORE_MCP_LOG_LEVEL=${CORE_MCP_LOG_LEVEL}
+      - CORE_MCP_HOST=${CORE_MCP_HOST}
+      - CORE_MCP_PORT=${CORE_MCP_PORT}
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "--quiet", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    networks:
+      - seed-net
+
+  opa:
+    image: openpolicyagent/opa:latest
+    command: run --server --addr :8181 /policies
+    volumes:
+      - ./policy-engine/policies:/policies:ro
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "--quiet", "http://localhost:8181/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    networks:
+      - seed-net
+
+  tool-forge:
+    build: ./tool-forge
+    depends_on:
+      state-store:
+        condition: service_healthy
+    environment:
+      - CORE_MCP_DATABASE_URL=${CORE_MCP_DATABASE_URL}
+    networks:
+      - seed-net
+
+  state-store:
+    image: postgres:16-alpine
+    environment:
+      - POSTGRES_DB=${POSTGRES_DB}
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./state-store/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U seed -d seeddb"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - seed-net
+
+volumes:
+  pgdata:
+
+networks:
+  seed-net:
+    driver: bridge

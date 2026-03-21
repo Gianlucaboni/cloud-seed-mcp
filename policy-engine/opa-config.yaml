@@ -1,0 +1,21 @@
+services:
+  - name: local
+    url: http://localhost:8181
+
+labels:
+  app: cloud-seed-mcp
+  component: policy-engine
+
+default_decision: /terraform/deny
+
+decision_logs:
+  console: true
+
+status:
+  console: true
+
+server:
+  # OPA listens on port 8181 — internal Docker network only
+  addr: ":8181"
+  # Enable diagnostic endpoint for health checks
+  diagnostic-addr: ":8282"

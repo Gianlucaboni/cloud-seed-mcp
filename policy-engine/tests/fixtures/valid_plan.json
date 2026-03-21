@@ -1,0 +1,63 @@
+{
+  "format_version": "1.2",
+  "terraform_version": "1.7.0",
+  "resource_changes": [
+    {
+      "address": "google_compute_instance.web_server",
+      "type": "google_compute_instance",
+      "name": "web_server",
+      "change": {
+        "actions": ["create"],
+        "after": {
+          "name": "acme-web-server",
+          "machine_type": "e2-medium",
+          "zone": "europe-west1-b",
+          "labels": {},
+          "guest_accelerator": []
+        }
+      }
+    },
+    {
+      "address": "google_storage_bucket.data_bucket",
+      "type": "google_storage_bucket",
+      "name": "data_bucket",
+      "change": {
+        "actions": ["create"],
+        "after": {
+          "name": "acme-data-bucket",
+          "location": "europe-west1",
+          "encryption": [
+            {
+              "default_kms_key_name": "projects/acme-project/locations/europe-west1/keyRings/main/cryptoKeys/bucket-key"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "address": "google_cloud_run_service.api",
+      "type": "google_cloud_run_service",
+      "name": "api",
+      "change": {
+        "actions": ["create"],
+        "after": {
+          "name": "acme-api",
+          "location": "europe-west1"
+        }
+      }
+    },
+    {
+      "address": "google_artifact_registry_repository.docker",
+      "type": "google_artifact_registry_repository",
+      "name": "docker",
+      "change": {
+        "actions": ["create"],
+        "after": {
+          "name": "acme-docker",
+          "location": "europe-west1",
+          "format": "DOCKER"
+        }
+      }
+    }
+  ]
+}

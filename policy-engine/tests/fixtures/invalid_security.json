@@ -1,0 +1,49 @@
+{
+  "format_version": "1.2",
+  "terraform_version": "1.7.0",
+  "resource_changes": [
+    {
+      "address": "google_storage_bucket.public_bucket",
+      "type": "google_storage_bucket",
+      "name": "public_bucket",
+      "change": {
+        "actions": ["create"],
+        "after": {
+          "name": "acme-public-bucket",
+          "location": "europe-west1",
+          "encryption": null
+        }
+      }
+    },
+    {
+      "address": "google_storage_bucket_iam_member.public_access",
+      "type": "google_storage_bucket_iam_member",
+      "name": "public_access",
+      "change": {
+        "actions": ["create"],
+        "after": {
+          "bucket": "acme-public-bucket",
+          "role": "roles/storage.objectViewer",
+          "member": "allUsers"
+        }
+      }
+    },
+    {
+      "address": "google_storage_bucket.Bad_Name_Bucket",
+      "type": "google_storage_bucket",
+      "name": "Bad_Name_Bucket",
+      "change": {
+        "actions": ["create"],
+        "after": {
+          "name": "Acme_BAD_Name",
+          "location": "europe-west1",
+          "encryption": [
+            {
+              "default_kms_key_name": "projects/acme-project/locations/europe-west1/keyRings/main/cryptoKeys/bucket-key"
+            }
+          ]
+        }
+      }
+    }
+  ]
+}
