@@ -5,9 +5,29 @@ from __future__ import annotations
 import json
 import os
 
+import httpx
 from mcp.server.fastmcp import FastMCP
 
+from core_mcp.config import Settings
 from core_mcp.tools._subprocess import run_command
+
+
+async def _validate_with_opa(plan_json: dict, opa_url: str) -> list[str]:
+    """POST plan JSON to OPA and return list of violations (empty = approved)."""
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(
+                f"{opa_url}/v1/data/terraform/deny",
+                json={"input": plan_json},
+            )
+            resp.raise_for_status()
+            return resp.json().get("result", []) or []
+    except httpx.ConnectError:
+        return [f"OPA unreachable at {opa_url} — cannot validate plan"]
+    except httpx.HTTPStatusError as e:
+        return [f"OPA returned HTTP {e.response.status_code}"]
+    except Exception as e:
+        return [f"OPA validation error: {e}"]
 
 
 def register(mcp: FastMCP) -> None:
@@ -117,22 +137,31 @@ def register(mcp: FastMCP) -> None:
                 "generate a plan before applying."
             )
 
-        # --- TODO: OPA validation ---
-        # POST the plan JSON to the OPA policy engine for validation:
-        #
-        #   plan_json = await _read_plan_json(module_path, plan_file)
-        #   async with httpx.AsyncClient() as client:
-        #       resp = await client.post(
-        #           f"{settings.opa_url}/v1/data/terraform/deny",
-        #           json={"input": plan_json},
-        #       )
-        #       violations = resp.json().get("result", [])
-        #       if violations:
-        #           return "OPA validation failed:\n" + "\n".join(violations)
-        #
+        # --- OPA validation ---
+        show_json_result = await run_command(
+            "terraform", "show", "-json", "-no-color", plan_file,
+            cwd=module_path,
+        )
+        if show_json_result.success:
+            try:
+                plan_json = json.loads(show_json_result.stdout)
+            except json.JSONDecodeError:
+                plan_json = None
+        else:
+            plan_json = None
+
+        if plan_json:
+            settings = Settings()
+            violations = await _validate_with_opa(plan_json, settings.opa_url)
+            if violations:
+                violation_list = "\n".join(f"  - {v}" for v in violations)
+                return (
+                    f"OPA policy validation FAILED for project '{project_id}'.\n\n"
+                    f"Violations:\n{violation_list}\n\n"
+                    f"The plan was NOT applied. Fix the violations and re-plan."
+                )
 
         # --- YELLOW ACTION: require approval ---
-        # Read the plan summary so the human reviewer has context
         show_result = await run_command(
             "terraform", "show", "-no-color", plan_file,
             cwd=module_path,

@@ -140,21 +140,70 @@ class TestTerraformPlan:
 class TestTerraformApply:
     @pytest.mark.asyncio
     async def test_success(self, mcp_server, make_run_result, tmp_path):
-        # Create a fake plan file
         plan_file = tmp_path / "plan.tfplan"
         plan_file.write_text("fake plan")
 
+        plan_json = json.dumps({"resource_changes": []})
+        show_json_ok = make_run_result(0, plan_json, "")
         show_ok = make_run_result(0, "will create 2 resources", "")
         apply_ok = make_run_result(0, "Apply complete! Resources: 2 added", "")
 
-        with patch("core_mcp.tools.terraform.run_command", new_callable=AsyncMock) as mock_cmd:
-            mock_cmd.side_effect = [show_ok, apply_ok]
+        with (
+            patch("core_mcp.tools.terraform.run_command", new_callable=AsyncMock) as mock_cmd,
+            patch("core_mcp.tools.terraform._validate_with_opa", new_callable=AsyncMock) as mock_opa,
+        ):
+            mock_cmd.side_effect = [show_json_ok, show_ok, apply_ok]
+            mock_opa.return_value = []  # no violations
 
             fn = _get_tool_fn(mcp_server, "terraform_apply")
             result = await fn("proj", str(tmp_path))
 
         assert "YELLOW ACTION" in result
         assert "apply completed" in result.lower() or "Apply complete" in result
+        mock_opa.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_opa_blocks_apply(self, mcp_server, make_run_result, tmp_path):
+        plan_file = tmp_path / "plan.tfplan"
+        plan_file.write_text("fake plan")
+
+        plan_json = json.dumps({"resource_changes": [{"type": "google_compute_instance"}]})
+        show_json_ok = make_run_result(0, plan_json, "")
+
+        with (
+            patch("core_mcp.tools.terraform.run_command", new_callable=AsyncMock) as mock_cmd,
+            patch("core_mcp.tools.terraform._validate_with_opa", new_callable=AsyncMock) as mock_opa,
+        ):
+            mock_cmd.side_effect = [show_json_ok]
+            mock_opa.return_value = ["Region us-central1 not allowed"]
+
+            fn = _get_tool_fn(mcp_server, "terraform_apply")
+            result = await fn("proj", str(tmp_path))
+
+        assert "OPA policy validation FAILED" in result
+        assert "us-central1" in result
+        assert "NOT applied" in result
+
+    @pytest.mark.asyncio
+    async def test_opa_unreachable_still_blocks(self, mcp_server, make_run_result, tmp_path):
+        plan_file = tmp_path / "plan.tfplan"
+        plan_file.write_text("fake plan")
+
+        plan_json = json.dumps({"resource_changes": []})
+        show_json_ok = make_run_result(0, plan_json, "")
+
+        with (
+            patch("core_mcp.tools.terraform.run_command", new_callable=AsyncMock) as mock_cmd,
+            patch("core_mcp.tools.terraform._validate_with_opa", new_callable=AsyncMock) as mock_opa,
+        ):
+            mock_cmd.side_effect = [show_json_ok]
+            mock_opa.return_value = ["OPA unreachable at http://opa:8181 — cannot validate plan"]
+
+            fn = _get_tool_fn(mcp_server, "terraform_apply")
+            result = await fn("proj", str(tmp_path))
+
+        assert "FAILED" in result
+        assert "unreachable" in result.lower()
 
     @pytest.mark.asyncio
     async def test_no_plan_file(self, mcp_server, tmp_path):
@@ -173,11 +222,17 @@ class TestTerraformApply:
         plan_file = tmp_path / "plan.tfplan"
         plan_file.write_text("fake")
 
+        plan_json = json.dumps({"resource_changes": []})
+        show_json_ok = make_run_result(0, plan_json, "")
         show_ok = make_run_result(0, "preview", "")
         apply_fail = make_run_result(1, "", "apply error")
 
-        with patch("core_mcp.tools.terraform.run_command", new_callable=AsyncMock) as mock_cmd:
-            mock_cmd.side_effect = [show_ok, apply_fail]
+        with (
+            patch("core_mcp.tools.terraform.run_command", new_callable=AsyncMock) as mock_cmd,
+            patch("core_mcp.tools.terraform._validate_with_opa", new_callable=AsyncMock) as mock_opa,
+        ):
+            mock_cmd.side_effect = [show_json_ok, show_ok, apply_fail]
+            mock_opa.return_value = []
 
             fn = _get_tool_fn(mcp_server, "terraform_apply")
             result = await fn("proj", str(tmp_path))
