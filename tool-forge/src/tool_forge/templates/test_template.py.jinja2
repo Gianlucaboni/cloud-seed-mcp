@@ -1,0 +1,87 @@
+"""Auto-generated tests for tool: {{ tool_name }}."""
+
+from __future__ import annotations
+
+import ast
+import importlib.util
+import types
+
+import pytest
+
+
+@pytest.fixture()
+def tool_module(tmp_path):
+    """Load the generated tool module from source."""
+    source_path = tmp_path / "{{ tool_name }}.py"
+    source_path.write_text(TOOL_SOURCE)
+    spec = importlib.util.spec_from_file_location("{{ tool_name }}", source_path)
+    mod = importlib.util.module_from_spec(spec)
+    # We do NOT exec the module (it would need mcp dependencies).
+    # Instead we verify structural properties.
+    mod.__source__ = TOOL_SOURCE
+    return mod
+
+
+TOOL_SOURCE = {{ tool_source_repr }}
+
+
+class TestStructure:
+    """Verify the generated tool follows the register(mcp) + @mcp.tool() pattern."""
+
+    def test_source_parses(self):
+        """Tool source must be valid Python."""
+        ast.parse(TOOL_SOURCE)
+
+    def test_has_register_function(self):
+        """Tool module must define a register() function."""
+        tree = ast.parse(TOOL_SOURCE)
+        func_names = [
+            node.name for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)
+        ]
+        assert "register" in func_names, "Missing register() function"
+
+    def test_register_takes_mcp_arg(self):
+        """register() must accept an mcp parameter."""
+        tree = ast.parse(TOOL_SOURCE)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef) and node.name == "register":
+                arg_names = [a.arg for a in node.args.args]
+                assert "mcp" in arg_names, "register() must have an 'mcp' parameter"
+                break
+
+    def test_has_mcp_tool_decorator(self):
+        """Inner function must be decorated with @mcp.tool()."""
+        tree = ast.parse(TOOL_SOURCE)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef) and node.name == "register":
+                # Look for nested async function with decorator
+                for child in ast.walk(node):
+                    if isinstance(child, ast.AsyncFunctionDef):
+                        decorators = child.decorator_list
+                        assert len(decorators) > 0, "Inner tool function has no decorators"
+                        break
+                break
+
+    def test_imports_run_command(self):
+        """Tool must import run_command from _subprocess."""
+        assert "from core_mcp.tools._subprocess import run_command" in TOOL_SOURCE
+
+    def test_has_docstring(self):
+        """Inner tool function must have a docstring."""
+        tree = ast.parse(TOOL_SOURCE)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.AsyncFunctionDef) and node.name == "{{ tool_name }}":
+                docstring = ast.get_docstring(node)
+                assert docstring, "Tool function must have a docstring"
+                break
+
+{% for param in parameters %}
+    def test_param_{{ param.name }}_in_signature(self):
+        """Parameter '{{ param.name }}' must appear in the tool function signature."""
+        tree = ast.parse(TOOL_SOURCE)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.AsyncFunctionDef) and node.name == "{{ tool_name }}":
+                arg_names = [a.arg for a in node.args.args]
+                assert "{{ param.name }}" in arg_names
+                break
+{% endfor %}

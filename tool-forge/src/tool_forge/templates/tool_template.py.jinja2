@@ -1,0 +1,25 @@
+"""{{ description }}"""
+
+from __future__ import annotations
+
+{% for imp in imports %}
+{{ imp }}
+{% endfor %}
+from mcp.server.fastmcp import FastMCP
+
+from core_mcp.tools._subprocess import run_command
+
+
+def register(mcp: FastMCP) -> None:
+    @mcp.tool()
+    async def {{ tool_name }}({{ parameters_signature }}) -> str:
+        """{{ docstring }}
+
+        Args:
+{% for param in parameters %}
+            {{ param.name }}: {{ param.description }}
+{% endfor %}
+        """
+{% for line in body_lines %}
+        {{ line }}
+{% endfor %}
