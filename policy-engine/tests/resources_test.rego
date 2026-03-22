@@ -84,6 +84,17 @@ test_data_pipeline_resources_pass if {
 }
 
 # --------------------------------------------------------------------------- #
+# Test: WIF resource types pass
+# --------------------------------------------------------------------------- #
+
+test_wif_resources_pass if {
+    result := terraform.deny with input as wif_resources_plan
+        with data.terraform.config as config
+    type_violations := {msg | msg := result[_]; contains(msg, "Resource type violation")}
+    count(type_violations) == 0
+}
+
+# --------------------------------------------------------------------------- #
 # Test configuration
 # --------------------------------------------------------------------------- #
 
@@ -321,6 +332,32 @@ non_gpu_plan := {
                     "zone": "europe-west1-b",
                     "labels": {},
                     "guest_accelerator": []
+                }
+            }
+        }
+    ]
+}
+
+wif_resources_plan := {
+    "resource_changes": [
+        {
+            "address": "google_iam_workload_identity_pool.github",
+            "type": "google_iam_workload_identity_pool",
+            "change": {
+                "actions": ["create"],
+                "after": {
+                    "workload_identity_pool_id": "cloudseed-github-pool",
+                    "disabled": false
+                }
+            }
+        },
+        {
+            "address": "google_iam_workload_identity_pool_provider.github",
+            "type": "google_iam_workload_identity_pool_provider",
+            "change": {
+                "actions": ["create"],
+                "after": {
+                    "workload_identity_pool_provider_id": "cs-iot-github"
                 }
             }
         }

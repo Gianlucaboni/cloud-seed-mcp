@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -261,3 +263,142 @@ class TestGithubPushFiles:
             )
 
         assert "push failed" in result.lower()
+
+
+# ---------------------------------------------------------------------------
+# github_setup_cicd
+# ---------------------------------------------------------------------------
+
+class TestGithubSetupCicd:
+    @pytest.fixture
+    def templates_dir(self, tmp_path):
+        """Create a temporary templates directory with a minimal deploy template."""
+        workflows_dir = tmp_path / "github-workflows"
+        workflows_dir.mkdir()
+        template = workflows_dir / "deploy.yml.jinja2"
+        template.write_text(
+            "# Deploy workflow\n"
+            "name: Deploy\n"
+            "env:\n"
+            "  PROJECT_ID: {{ project_id }}\n"
+            "  REGION: {{ region }}\n"
+            "  SERVICE: {{ service_name }}\n"
+            "  SA: {{ service_account_email }}\n"
+            "  WIF: {{ workload_identity_provider }}\n"
+        )
+        return str(tmp_path)
+
+    @pytest.mark.asyncio
+    async def test_success(self, mcp_server, make_run_result, tmp_path, templates_dir):
+        add_ok = make_run_result(0, "", "")
+        commit_ok = make_run_result(0, "", "")
+        push_ok = make_run_result(0, "", "")
+
+        work_dir = str(tmp_path / "repo")
+        os.makedirs(work_dir)
+
+        with (
+            patch("core_mcp.tools.github.run_command", new_callable=AsyncMock) as mock_cmd,
+            patch("core_mcp.tools.github.Settings") as mock_settings,
+        ):
+            mock_settings.return_value.templates_dir = templates_dir
+            mock_cmd.side_effect = [add_ok, commit_ok, push_ok]
+            fn = _get_tool_fn(mcp_server, "github_setup_cicd")
+            result = await fn(
+                repo="acme/app",
+                project_id="acme-prod",
+                service_name="acme-api",
+                service_account_email="sa-deploy@acme-prod.iam.gserviceaccount.com",
+                workload_identity_provider="projects/123/locations/global/workloadIdentityPools/cloudseed-github-pool/providers/cs-acme-github",
+                work_dir=work_dir,
+            )
+
+        assert "YELLOW ACTION" in result
+        assert "successfully" in result
+        assert "acme-prod" in result
+
+        # Verify workflow file was written
+        wf = Path(work_dir) / ".github" / "workflows" / "deploy.yml"
+        assert wf.exists()
+        content = wf.read_text()
+        assert "acme-prod" in content
+        assert "acme-api" in content
+
+    @pytest.mark.asyncio
+    async def test_no_work_dir(self, mcp_server):
+        fn = _get_tool_fn(mcp_server, "github_setup_cicd")
+        result = await fn(
+            repo="acme/app", project_id="p", service_name="s",
+            service_account_email="sa@x", workload_identity_provider="wif",
+        )
+        assert "Error" in result
+
+    @pytest.mark.asyncio
+    async def test_relative_work_dir(self, mcp_server):
+        fn = _get_tool_fn(mcp_server, "github_setup_cicd")
+        result = await fn(
+            repo="acme/app", project_id="p", service_name="s",
+            service_account_email="sa@x", workload_identity_provider="wif",
+            work_dir="relative/path",
+        )
+        assert "Error" in result
+        assert "absolute" in result
+
+    @pytest.mark.asyncio
+    async def test_push_failure(self, mcp_server, make_run_result, tmp_path, templates_dir):
+        add_ok = make_run_result(0, "", "")
+        commit_ok = make_run_result(0, "", "")
+        push_fail = make_run_result(1, "", "rejected")
+
+        work_dir = str(tmp_path / "repo")
+        os.makedirs(work_dir)
+
+        with (
+            patch("core_mcp.tools.github.run_command", new_callable=AsyncMock) as mock_cmd,
+            patch("core_mcp.tools.github.Settings") as mock_settings,
+        ):
+            mock_settings.return_value.templates_dir = templates_dir
+            mock_cmd.side_effect = [add_ok, commit_ok, push_fail]
+            fn = _get_tool_fn(mcp_server, "github_setup_cicd")
+            result = await fn(
+                repo="acme/app", project_id="p", service_name="s",
+                service_account_email="sa@x", workload_identity_provider="wif",
+                work_dir=work_dir,
+            )
+
+        assert "push failed" in result
+
+    @pytest.mark.asyncio
+    async def test_template_rendering(self, mcp_server, make_run_result, tmp_path, templates_dir):
+        """Verify the rendered workflow contains all expected values."""
+        add_ok = make_run_result(0, "", "")
+        commit_ok = make_run_result(0, "", "")
+        push_ok = make_run_result(0, "", "")
+
+        work_dir = str(tmp_path / "repo")
+        os.makedirs(work_dir)
+
+        with (
+            patch("core_mcp.tools.github.run_command", new_callable=AsyncMock) as mock_cmd,
+            patch("core_mcp.tools.github.Settings") as mock_settings,
+        ):
+            mock_settings.return_value.templates_dir = templates_dir
+            mock_cmd.side_effect = [add_ok, commit_ok, push_ok]
+            fn = _get_tool_fn(mcp_server, "github_setup_cicd")
+            await fn(
+                repo="acme/app",
+                project_id="my-project",
+                service_name="my-service",
+                service_account_email="deploy@my-project.iam",
+                workload_identity_provider="projects/999/locations/global/pools/pool/providers/prov",
+                region="us-central1",
+                work_dir=work_dir,
+            )
+
+        wf = Path(work_dir) / ".github" / "workflows" / "deploy.yml"
+        content = wf.read_text()
+        assert "my-project" in content
+        assert "us-central1" in content
+        assert "my-service" in content
+        assert "deploy@my-project.iam" in content
+        assert "projects/999" in content

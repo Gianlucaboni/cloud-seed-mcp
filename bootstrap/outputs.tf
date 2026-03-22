@@ -36,3 +36,17 @@ output "ephemeral_cleanup_job_name" {
   description = "Name of the Cloud Scheduler job that cleans up expired ephemeral SAs"
   value       = module.ephemeral_sa.cleanup_job_name
 }
+
+# ─── Workload Identity Federation ────────────────────────────────────────────
+output "wif_pool_name" {
+  description = "Full resource name of the GitHub WIF pool"
+  value       = google_iam_workload_identity_pool.github.name
+}
+
+output "wif_provider_names" {
+  description = "Map of client project names to their WIF provider resource names"
+  value = {
+    for name, mod in module.project_sa : name => mod.wif_provider_name
+    if mod.wif_provider_name != ""
+  }
+}

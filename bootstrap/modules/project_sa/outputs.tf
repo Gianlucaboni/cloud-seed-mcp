@@ -31,3 +31,8 @@ output "data_sa_name" {
   description = "Fully qualified name of the Data SA"
   value       = google_service_account.data.name
 }
+
+output "wif_provider_name" {
+  description = "Full resource name of the WIF provider (empty if no GitHub repo configured)"
+  value       = var.github_repo != "" ? google_iam_workload_identity_pool_provider.github[0].name : ""
+}

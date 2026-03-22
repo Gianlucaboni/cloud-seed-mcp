@@ -167,3 +167,40 @@ resource "google_project_iam_member" "data_additional" {
   role    = each.value
   member  = "serviceAccount:${google_service_account.data.email}"
 }
+
+# =============================================================================
+# WIF: GitHub Actions OIDC Provider + SA Deploy Binding
+# =============================================================================
+# Enables GitHub Actions in the specified repo to authenticate as SA Deploy
+# via Workload Identity Federation. No SA keys needed.
+
+resource "google_iam_workload_identity_pool_provider" "github" {
+  count = var.github_repo != "" ? 1 : 0
+
+  provider                           = google-beta
+  project                            = var.seed_project_id
+  workload_identity_pool_id          = var.wif_pool_id
+  workload_identity_pool_provider_id = "${local.sa_prefix}-github"
+  display_name                       = "GitHub Actions — ${var.project_name}"
+  description                        = "OIDC provider for ${var.github_repo}"
+
+  attribute_mapping = {
+    "google.subject"       = "assertion.sub"
+    "attribute.actor"      = "assertion.actor"
+    "attribute.repository" = "assertion.repository"
+  }
+
+  attribute_condition = "assertion.repository == '${var.github_repo}'"
+
+  oidc {
+    issuer_uri = "https://token.actions.githubusercontent.com"
+  }
+}
+
+resource "google_service_account_iam_member" "deploy_wif_binding" {
+  count = var.github_repo != "" ? 1 : 0
+
+  service_account_id = google_service_account.deploy.name
+  role               = "roles/iam.workloadIdentityUser"
+  member             = "principalSet://iam.googleapis.com/${var.wif_pool_name}/attribute.repository/${var.github_repo}"
+}

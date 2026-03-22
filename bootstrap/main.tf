@@ -36,6 +36,21 @@ resource "google_project_service" "required_apis" {
   disable_on_destroy         = false
 }
 
+# =============================================================================
+# Workload Identity Federation — GitHub Actions pool
+# =============================================================================
+
+resource "google_iam_workload_identity_pool" "github" {
+  provider                  = google-beta
+  workload_identity_pool_id = "cloudseed-github-pool"
+  display_name              = "Cloud Seed — GitHub Actions Pool"
+  description               = "WIF pool for GitHub Actions CI/CD across all client projects"
+  project                   = var.seed_project_id
+  disabled                  = false
+
+  depends_on = [google_project_service.required_apis]
+}
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Per-Project SA module — creates Runtime, Deploy, Data SAs for each client
 # ─────────────────────────────────────────────────────────────────────────────
@@ -47,6 +62,10 @@ module "project_sa" {
   project_id      = each.value.project_id
   seed_project_id = var.seed_project_id
   labels          = var.seed_labels
+
+  github_repo   = each.value.github_repo
+  wif_pool_name = google_iam_workload_identity_pool.github.name
+  wif_pool_id   = "cloudseed-github-pool"
 }
 
 # ─────────────────────────────────────────────────────────────────────────────

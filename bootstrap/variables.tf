@@ -29,9 +29,10 @@ variable "default_region" {
 }
 
 variable "client_projects" {
-  description = "Map of client project configurations. Key is a short name, value contains the project ID."
+  description = "Map of client project configurations. Key is a short name, value contains the project ID and optional github_repo (owner/repo) for WIF CI/CD binding."
   type = map(object({
-    project_id = string
+    project_id  = string
+    github_repo = optional(string, "")
   }))
   default = {}
 }

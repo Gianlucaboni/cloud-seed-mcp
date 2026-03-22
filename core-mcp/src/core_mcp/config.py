@@ -7,5 +7,6 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     host: str = "0.0.0.0"
     port: int = 8000
+    templates_dir: str = "/app/templates"
 
     model_config = {"env_prefix": "CORE_MCP_"}

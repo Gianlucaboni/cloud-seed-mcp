@@ -45,3 +45,21 @@ variable "data_additional_roles" {
   type        = list(string)
   default     = []
 }
+
+variable "github_repo" {
+  description = "GitHub repository (owner/repo) for WIF CI/CD binding. Empty string means no WIF setup."
+  type        = string
+  default     = ""
+}
+
+variable "wif_pool_name" {
+  description = "Full resource name of the WIF identity pool (from root module)"
+  type        = string
+  default     = ""
+}
+
+variable "wif_pool_id" {
+  description = "Short ID of the WIF pool (e.g. cloudseed-github-pool)"
+  type        = string
+  default     = ""
+}

@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 
+from jinja2 import Environment, FileSystemLoader
 from mcp.server.fastmcp import FastMCP
 
+from core_mcp.config import Settings
 from core_mcp.tools._subprocess import run_command
 
 
@@ -173,4 +176,110 @@ def register(mcp: FastMCP) -> None:
             f"[YELLOW ACTION] Pushed {len(files)} file(s) to {repo}:{branch}.\n"
             f"Commit: {message}\n"
             f"Output: {push_result.stderr or push_result.stdout}"
+        )
+
+    @mcp.tool()
+    async def github_setup_cicd(
+        repo: str,
+        project_id: str,
+        service_name: str,
+        service_account_email: str,
+        workload_identity_provider: str,
+        region: str = "europe-west1",
+        work_dir: str = "",
+    ) -> str:
+        """Set up GitHub Actions CI/CD with Workload Identity Federation.
+
+        Generates a deploy.yml workflow that authenticates via WIF (no SA keys)
+        and deploys to Cloud Run on push to main.  This is a Yellow action.
+
+        Args:
+            repo: GitHub repository (owner/repo format).
+            project_id: GCP project identifier for deployment target.
+            service_name: Cloud Run service name.
+            service_account_email: SA Deploy email for WIF authentication.
+            workload_identity_provider: Full WIF provider resource name.
+            region: GCP region for deployment.
+            work_dir: Absolute path to the local git clone of the repo.
+        """
+        if not work_dir:
+            return "Error: work_dir is required (absolute path to the local git clone)."
+
+        if not os.path.isabs(work_dir):
+            return f"Error: work_dir must be an absolute path, got: {work_dir}"
+
+        # Render workflow template
+        settings = Settings()
+        templates_path = Path(settings.templates_dir) / "github-workflows"
+
+        if not templates_path.is_dir():
+            return f"Error: templates directory not found at {templates_path}"
+
+        env = Environment(
+            loader=FileSystemLoader(str(templates_path)),
+            keep_trailing_newline=True,
+        )
+        template = env.get_template("deploy.yml.jinja2")
+        workflow_content = template.render(
+            project_id=project_id,
+            region=region,
+            service_name=service_name,
+            service_account_email=service_account_email,
+            workload_identity_provider=workload_identity_provider,
+        )
+
+        # Write workflow file
+        workflows_dir = os.path.join(work_dir, ".github", "workflows")
+        os.makedirs(workflows_dir, exist_ok=True)
+        workflow_file = os.path.join(workflows_dir, "deploy.yml")
+        with open(workflow_file, "w") as f:
+            f.write(workflow_content)
+
+        # Git add, commit, push
+        add_result = await run_command(
+            "git", "add", ".github/workflows/deploy.yml",
+            cwd=work_dir,
+        )
+        if not add_result.success:
+            return (
+                f"[YELLOW ACTION] Failed to stage workflow file.\n"
+                f"stderr: {add_result.stderr}"
+            )
+
+        commit_result = await run_command(
+            "git", "commit", "-m", "ci: add Cloud Run deploy workflow with WIF auth",
+            cwd=work_dir,
+        )
+        if not commit_result.success:
+            if "nothing to commit" in commit_result.stdout:
+                return (
+                    "[YELLOW ACTION] Workflow file already exists and is unchanged.\n"
+                    f"File: {workflow_file}"
+                )
+            return (
+                f"[YELLOW ACTION] Failed to commit workflow.\n"
+                f"stderr: {commit_result.stderr}"
+            )
+
+        push_result = await run_command(
+            "git", "push",
+            cwd=work_dir,
+        )
+        if not push_result.success:
+            return (
+                f"[YELLOW ACTION] Workflow committed locally but push failed.\n"
+                f"stderr: {push_result.stderr}\n"
+                f"File: {workflow_file}"
+            )
+
+        return (
+            f"[YELLOW ACTION] CI/CD workflow deployed successfully.\n"
+            f"Repository: {repo}\n"
+            f"Project: {project_id}\n"
+            f"Service: {service_name}\n"
+            f"Region: {region}\n"
+            f"WIF Provider: {workload_identity_provider}\n"
+            f"SA: {service_account_email}\n"
+            f"Workflow: {workflow_file}\n\n"
+            f"Push to main will now auto-deploy to Cloud Run."
         )

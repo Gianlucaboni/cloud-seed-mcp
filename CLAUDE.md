@@ -185,6 +185,7 @@ When the system creates a new project with GitHub-based CI/CD:
 
 ## Development Guidelines
 
+- **GitHub:** Always use GitHub MCP tools (mcp__github__*) for all GitHub operations (issues, PRs, repos). Never use `gh` CLI via Bash.
 - **Language:** Python for Core MCP and tool generation (Go for future performance-critical components)
 - **Terraform:** All infrastructure changes MUST go through Terraform — no manual gcloud operations
 - **OPA validation:** Every Terraform plan MUST pass OPA validation before apply — no exceptions

@@ -14,6 +14,9 @@ services:
       - CORE_MCP_LOG_LEVEL=${CORE_MCP_LOG_LEVEL}
       - CORE_MCP_HOST=${CORE_MCP_HOST}
       - CORE_MCP_PORT=${CORE_MCP_PORT}
+      - CORE_MCP_TEMPLATES_DIR=/app/templates
+    volumes:
+      - ./templates:/app/templates:ro
     healthcheck:
       test: ["CMD", "wget", "--spider", "--quiet", "http://localhost:8000/health"]
       interval: 10s
