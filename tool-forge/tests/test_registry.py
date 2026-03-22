@@ -42,6 +42,7 @@ def _make_row(
         "description": "A test tool",
         "schema_json": json.dumps({"type": "object"}),
         "code_hash": compute_code_hash("print('hello')"),
+        "source_code": "def register(mcp): pass",
         "status": status,
         "created_at": datetime.now(timezone.utc),
         "promoted_at": promoted_at,

@@ -1,23 +1,59 @@
+import asyncio
+import logging
 from contextlib import asynccontextmanager
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 
+import asyncpg
 from mcp.server.fastmcp import FastMCP
 
 from core_mcp.config import Settings
+from core_mcp.tool_loader import load_tools_from_registry, poll_registry
 from core_mcp.tools import terraform, github, cloudrun, database
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
 class AppContext:
     settings: Settings
+    db_pool: asyncpg.Pool | None = None
 
 
 @asynccontextmanager
 async def app_lifespan(server: FastMCP) -> AsyncIterator[AppContext]:
     settings = Settings()
-    # Future: initialize DB pool, OPA client, etc.
-    yield AppContext(settings=settings)
+    db_pool: asyncpg.Pool | None = None
+    poll_task: asyncio.Task | None = None
+
+    try:
+        db_pool = await asyncpg.create_pool(settings.database_url)
+        loaded_tools: set[str] = set()
+        loaded = await load_tools_from_registry(
+            db_pool, server, loaded_tools=loaded_tools,
+        )
+        logger.info("Loaded %d dynamic tool(s) from registry", loaded)
+        poll_task = asyncio.create_task(
+            poll_registry(db_pool, server, loaded_tools),
+        )
+    except Exception:
+        logger.warning(
+            "Could not connect to state-store or load dynamic tools. "
+            "Continuing with built-in tools only.",
+            exc_info=True,
+        )
+
+    try:
+        yield AppContext(settings=settings, db_pool=db_pool)
+    finally:
+        if poll_task is not None:
+            poll_task.cancel()
+            try:
+                await poll_task
+            except asyncio.CancelledError:
+                pass
+        if db_pool is not None:
+            await db_pool.close()
 
 
 mcp = FastMCP(

@@ -230,3 +230,176 @@ class TestDatabaseListDatabases:
             result = await fn("proj")
 
         assert "unable" in result.lower()
+
+
+# ---------------------------------------------------------------------------
+# database_create_table
+# ---------------------------------------------------------------------------
+
+class TestDatabaseCreateTable:
+    @pytest.mark.asyncio
+    async def test_create_table_success(self, mcp_server, make_run_result, tmp_path):
+        init_ok = make_run_result(0, "Initialized", "")
+        plan_ok = make_run_result(0, "Plan: 1 to add", "")
+        schema = [{"name": "id", "type": "STRING", "mode": "REQUIRED"}]
+
+        with patch("core_mcp.tools.database.run_command", new_callable=AsyncMock) as mock_cmd:
+            mock_cmd.side_effect = [init_ok, plan_ok]
+
+            fn = _get_tool_fn(mcp_server, "database_create_table")
+            result = await fn(
+                "my-proj",
+                "my_dataset",
+                "my_table",
+                json.dumps(schema),
+                tf_dir=str(tmp_path),
+            )
+
+        assert "YELLOW ACTION" in result
+        assert "my_dataset" in result
+        assert "my_table" in result
+
+        tf_file = tmp_path / "bigquery_table_my_dataset_my_table.tf"
+        assert tf_file.exists()
+        content = tf_file.read_text()
+        assert "google_bigquery_table" in content
+        assert "my_table" in content
+
+    @pytest.mark.asyncio
+    async def test_create_table_no_tf_dir(self, mcp_server):
+        fn = _get_tool_fn(mcp_server, "database_create_table")
+        result = await fn("proj", "ds", "tbl", json.dumps([]))
+        assert "Error" in result
+        assert "required" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_create_table_relative_tf_dir(self, mcp_server):
+        fn = _get_tool_fn(mcp_server, "database_create_table")
+        result = await fn("proj", "ds", "tbl", json.dumps([]), tf_dir="relative/path")
+        assert "Error" in result
+        assert "absolute path" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_create_table_invalid_schema(self, mcp_server, tmp_path):
+        fn = _get_tool_fn(mcp_server, "database_create_table")
+        result = await fn("proj", "ds", "tbl", "not-valid-json", tf_dir=str(tmp_path))
+        assert "Error" in result
+        assert "JSON" in result
+
+    @pytest.mark.asyncio
+    async def test_create_table_init_failure(self, mcp_server, make_run_result, tmp_path):
+        init_fail = make_run_result(1, "", "init error")
+        schema = [{"name": "col", "type": "STRING", "mode": "NULLABLE"}]
+
+        with patch("core_mcp.tools.database.run_command", new_callable=AsyncMock) as mock_cmd:
+            mock_cmd.return_value = init_fail
+
+            fn = _get_tool_fn(mcp_server, "database_create_table")
+            result = await fn(
+                "proj", "ds", "tbl", json.dumps(schema), tf_dir=str(tmp_path)
+            )
+
+        assert "init failed" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_create_table_plan_failure(self, mcp_server, make_run_result, tmp_path):
+        init_ok = make_run_result(0, "Initialized", "")
+        plan_fail = make_run_result(1, "", "plan error")
+        schema = [{"name": "col", "type": "STRING", "mode": "NULLABLE"}]
+
+        with patch("core_mcp.tools.database.run_command", new_callable=AsyncMock) as mock_cmd:
+            mock_cmd.side_effect = [init_ok, plan_fail]
+
+            fn = _get_tool_fn(mcp_server, "database_create_table")
+            result = await fn(
+                "proj", "ds", "tbl", json.dumps(schema), tf_dir=str(tmp_path)
+            )
+
+        assert "plan failed" in result.lower()
+
+
+# ---------------------------------------------------------------------------
+# database_query
+# ---------------------------------------------------------------------------
+
+class TestDatabaseQuery:
+    @pytest.mark.asyncio
+    async def test_query_success(self, mcp_server, make_run_result):
+        rows = [{"id": "1", "name": "Alice"}, {"id": "2", "name": "Bob"}]
+        query_ok = make_run_result(0, json.dumps(rows), "")
+
+        with patch("core_mcp.tools.database.run_command", new_callable=AsyncMock) as mock_cmd:
+            mock_cmd.return_value = query_ok
+
+            fn = _get_tool_fn(mcp_server, "database_query")
+            result = await fn("my-proj", "SELECT id, name FROM my_dataset.my_table")
+
+        assert "2 row(s)" in result
+        assert "Alice" in result
+        assert "Bob" in result
+
+    @pytest.mark.asyncio
+    async def test_query_failure(self, mcp_server, make_run_result):
+        query_fail = make_run_result(1, "", "Access denied on table")
+
+        with patch("core_mcp.tools.database.run_command", new_callable=AsyncMock) as mock_cmd:
+            mock_cmd.return_value = query_fail
+
+            fn = _get_tool_fn(mcp_server, "database_query")
+            result = await fn("my-proj", "SELECT * FROM restricted_table")
+
+        assert "Error" in result
+        assert "Access denied" in result
+
+    @pytest.mark.asyncio
+    async def test_query_json_parse_error(self, mcp_server, make_run_result):
+        bad_output = make_run_result(0, "not-json-at-all", "")
+
+        with patch("core_mcp.tools.database.run_command", new_callable=AsyncMock) as mock_cmd:
+            mock_cmd.return_value = bad_output
+
+            fn = _get_tool_fn(mcp_server, "database_query")
+            result = await fn("my-proj", "SELECT 1")
+
+        assert "Error" in result
+        assert "parse" in result.lower()
+
+
+# ---------------------------------------------------------------------------
+# database_insert_data
+# ---------------------------------------------------------------------------
+
+class TestDatabaseInsertData:
+    @pytest.mark.asyncio
+    async def test_insert_data_success(self, mcp_server, make_run_result):
+        rows = [{"id": "1", "name": "Alice"}]
+        insert_ok = make_run_result(0, "", "")
+
+        with patch("core_mcp.tools.database.run_command", new_callable=AsyncMock) as mock_cmd:
+            mock_cmd.return_value = insert_ok
+
+            fn = _get_tool_fn(mcp_server, "database_insert_data")
+            result = await fn("my-proj", "my_dataset", "my_table", json.dumps(rows))
+
+        assert "YELLOW ACTION" in result
+        assert "1 row(s)" in result
+
+    @pytest.mark.asyncio
+    async def test_insert_data_invalid_json(self, mcp_server):
+        fn = _get_tool_fn(mcp_server, "database_insert_data")
+        result = await fn("proj", "ds", "tbl", "{bad-json")
+        assert "Error" in result
+        assert "JSON" in result
+
+    @pytest.mark.asyncio
+    async def test_insert_data_bq_failure(self, mcp_server, make_run_result):
+        rows = [{"id": "1"}]
+        insert_fail = make_run_result(1, "", "No such table")
+
+        with patch("core_mcp.tools.database.run_command", new_callable=AsyncMock) as mock_cmd:
+            mock_cmd.return_value = insert_fail
+
+            fn = _get_tool_fn(mcp_server, "database_insert_data")
+            result = await fn("proj", "ds", "tbl", json.dumps(rows))
+
+        assert "insert failed" in result.lower()

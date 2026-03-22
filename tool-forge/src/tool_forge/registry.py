@@ -33,6 +33,7 @@ class ToolRecord:
     description: str | None
     schema_json: dict[str, Any]
     code_hash: str
+    source_code: str | None
     status: ToolStatus
     created_at: datetime
     promoted_at: datetime | None
@@ -54,6 +55,7 @@ def _row_to_record(row: asyncpg.Record) -> ToolRecord:
         description=row["description"],
         schema_json=schema,
         code_hash=row["code_hash"],
+        source_code=row["source_code"],
         status=ToolStatus(row["status"]),
         created_at=row["created_at"],
         promoted_at=row["promoted_at"],
@@ -90,8 +92,8 @@ async def register_tool(
     code_hash = compute_code_hash(source_code)
     row = await pool.fetchrow(
         """
-        INSERT INTO tool_registry (name, version, description, schema_json, code_hash, status)
-        VALUES ($1, $2, $3, $4::jsonb, $5, 'staging')
+        INSERT INTO tool_registry (name, version, description, schema_json, code_hash, source_code, status)
+        VALUES ($1, $2, $3, $4::jsonb, $5, $6, 'staging')
         RETURNING *
         """,
         name,
@@ -99,6 +101,7 @@ async def register_tool(
         description,
         json.dumps(schema_json),
         code_hash,
+        source_code,
     )
     return _row_to_record(row)
 

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
 import textwrap
 
 from mcp.server.fastmcp import FastMCP
@@ -82,6 +83,38 @@ def _write_cloudsql_hcl(
     """)
     os.makedirs(tf_dir, exist_ok=True)
     tf_file = os.path.join(tf_dir, f"cloudsql_{instance_name}.tf")
+    with open(tf_file, "w") as f:
+        f.write(hcl)
+    return tf_file
+
+
+def _write_bigquery_table_hcl(
+    tf_dir: str,
+    project_id: str,
+    dataset_id: str,
+    table_id: str,
+    schema: list[dict],
+) -> str:
+    """Write a minimal Terraform file for a BigQuery table.
+
+    Returns the path to the written .tf file.
+    """
+    schema_json = json.dumps(schema, indent=2)
+    hcl = textwrap.dedent(f"""\
+        resource "google_bigquery_table" "{table_id}" {{
+          dataset_id = "{dataset_id}"
+          table_id   = "{table_id}"
+          project    = "{project_id}"
+
+          schema = jsonencode({schema_json})
+
+          labels = {{
+            managed_by = "cloud-seed"
+          }}
+        }}
+    """)
+    os.makedirs(tf_dir, exist_ok=True)
+    tf_file = os.path.join(tf_dir, f"bigquery_table_{dataset_id}_{table_id}.tf")
     with open(tf_file, "w") as f:
         f.write(hcl)
     return tf_file
@@ -307,3 +340,179 @@ def register(mcp: FastMCP) -> None:
             )
 
         return "\n".join(sections)
+
+    @mcp.tool()
+    async def database_create_table(
+        project_id: str,
+        dataset_id: str,
+        table_id: str,
+        schema_json: str,
+        tf_dir: str = "",
+    ) -> str:
+        """Create a BigQuery table via Terraform.
+
+        Generates Terraform HCL for a BigQuery table, runs ``terraform init``
+        and ``terraform plan``.  This is a Yellow action -- actual creation
+        requires approval via ``terraform_apply``.
+
+        Args:
+            project_id: GCP project identifier.
+            dataset_id: BigQuery dataset identifier (must already exist).
+            table_id: BigQuery table identifier.
+            schema_json: JSON string with an array of column definitions, each
+                         with ``name``, ``type``, and ``mode`` keys.
+                         Example: ``[{"name": "id", "type": "STRING",
+                         "mode": "REQUIRED"}]``
+            tf_dir: Absolute path to the Terraform working directory.
+                    If empty, returns an error.
+        """
+        if not tf_dir:
+            return "Error: tf_dir is required (absolute path to Terraform working directory)."
+
+        if not os.path.isabs(tf_dir):
+            return f"Error: tf_dir must be an absolute path, got: {tf_dir}"
+
+        try:
+            schema = json.loads(schema_json)
+        except json.JSONDecodeError as exc:
+            return f"Error: schema_json is not valid JSON: {exc}"
+
+        # Generate Terraform HCL
+        tf_file = _write_bigquery_table_hcl(
+            tf_dir, project_id, dataset_id, table_id, schema
+        )
+
+        # terraform init
+        init_result = await run_command(
+            "terraform", "init", "-input=false", "-no-color",
+            cwd=tf_dir,
+        )
+        if not init_result.success:
+            return (
+                f"[YELLOW ACTION] Terraform init failed.\n"
+                f"stderr: {init_result.stderr}"
+            )
+
+        # terraform plan
+        plan_file = os.path.join(tf_dir, "plan.tfplan")
+        plan_result = await run_command(
+            "terraform", "plan",
+            "-input=false", "-no-color",
+            f"-out={plan_file}",
+            cwd=tf_dir,
+        )
+        if not plan_result.success:
+            return (
+                f"[YELLOW ACTION] Terraform plan failed for BigQuery table "
+                f"'{dataset_id}.{table_id}'.\nstderr: {plan_result.stderr}"
+            )
+
+        return (
+            f"[YELLOW ACTION] BigQuery table '{dataset_id}.{table_id}' Terraform plan "
+            f"generated successfully.\n"
+            f"Project: {project_id}\n"
+            f"Dataset: {dataset_id}\n"
+            f"Table: {table_id}\n"
+            f"Columns: {len(schema)}\n"
+            f"HCL file: {tf_file}\n"
+            f"Plan file: {plan_file}\n\n"
+            f"Run terraform_apply to create the table (requires approval)."
+        )
+
+    @mcp.tool()
+    async def database_query(project_id: str, query_sql: str) -> str:
+        """Run a BigQuery SQL query and return results.
+
+        Uses the ``bq`` CLI to execute the query.  This is a Green action
+        (read-only).
+
+        Args:
+            project_id: GCP project identifier.
+            query_sql: Standard SQL query string to execute.
+        """
+        query_result = await run_command(
+            "bq", "query",
+            f"--project_id={project_id}",
+            "--format=json",
+            "--nouse_legacy_sql",
+            "--",
+            query_sql,
+        )
+        if not query_result.success:
+            return (
+                f"Error: BigQuery query failed.\n"
+                f"stderr: {query_result.stderr}"
+            )
+
+        try:
+            rows = json.loads(query_result.stdout)
+        except json.JSONDecodeError:
+            return (
+                f"Error: failed to parse BigQuery output as JSON.\n"
+                f"raw output: {query_result.stdout}"
+            )
+
+        if not rows:
+            return "Query executed successfully. No rows returned."
+
+        # Build a readable tabular representation
+        lines = [f"Query returned {len(rows)} row(s):"]
+        for i, row in enumerate(rows):
+            lines.append(f"  Row {i + 1}: {json.dumps(row)}")
+        return "\n".join(lines)
+
+    @mcp.tool()
+    async def database_insert_data(
+        project_id: str,
+        dataset_id: str,
+        table_id: str,
+        rows_json: str,
+    ) -> str:
+        """Insert rows into a BigQuery table via the ``bq`` CLI.
+
+        This is a Yellow action -- data will be written to the table.
+
+        Args:
+            project_id: GCP project identifier.
+            dataset_id: BigQuery dataset identifier.
+            table_id: BigQuery table identifier.
+            rows_json: JSON string with an array of row objects to insert.
+                       Each object must match the table schema.
+                       Example: ``[{"id": "1", "name": "Alice"}]``
+        """
+        try:
+            rows = json.loads(rows_json)
+        except json.JSONDecodeError as exc:
+            return f"Error: rows_json is not valid JSON: {exc}"
+
+        tmpfile_path: str | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w", suffix=".json", delete=False
+            ) as tmpfile:
+                tmpfile_path = tmpfile.name
+                json.dump(rows, tmpfile)
+
+            insert_result = await run_command(
+                "bq", "insert",
+                f"{project_id}:{dataset_id}.{table_id}",
+                tmpfile_path,
+            )
+        finally:
+            if tmpfile_path is not None:
+                try:
+                    os.unlink(tmpfile_path)
+                except OSError:
+                    pass
+
+        if not insert_result.success:
+            return (
+                f"[YELLOW ACTION] BigQuery insert failed for "
+                f"'{dataset_id}.{table_id}'.\n"
+                f"stderr: {insert_result.stderr}"
+            )
+
+        return (
+            f"[YELLOW ACTION] Successfully inserted {len(rows)} row(s) into "
+            f"'{project_id}:{dataset_id}.{table_id}'."
+        )

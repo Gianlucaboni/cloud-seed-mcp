@@ -36,6 +36,7 @@ CREATE TABLE tool_registry (
     description     TEXT,
     schema_json     JSONB NOT NULL,
     code_hash       TEXT NOT NULL,
+    source_code     TEXT,
     status          TEXT NOT NULL DEFAULT 'staging'
                         CHECK (status IN ('staging', 'active', 'deprecated')),
     created_at      TIMESTAMPTZ DEFAULT now(),
