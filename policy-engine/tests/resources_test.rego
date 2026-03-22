@@ -73,6 +73,17 @@ test_non_gpu_instance_passes if {
 }
 
 # --------------------------------------------------------------------------- #
+# Test: data pipeline resource types pass (walkthrough scenario)
+# --------------------------------------------------------------------------- #
+
+test_data_pipeline_resources_pass if {
+    result := terraform.deny with input as data_pipeline_plan
+        with data.terraform.config as config
+    type_violations := {msg | msg := result[_]; contains(msg, "Resource type violation")}
+    count(type_violations) == 0
+}
+
+# --------------------------------------------------------------------------- #
 # Test configuration
 # --------------------------------------------------------------------------- #
 
@@ -81,19 +92,30 @@ config := {
     "allowed_regions": ["europe-west1", "europe-west4", "europe-west6"],
     "allowed_zones": ["europe-west1-b", "europe-west1-c", "europe-west1-d", "europe-west4-a", "europe-west4-b", "europe-west4-c", "europe-west6-a", "europe-west6-b", "europe-west6-c"],
     "allowed_resource_types": [
-        "google_compute_instance", "google_storage_bucket", "google_cloud_run_service",
-        "google_artifact_registry_repository", "google_sql_database_instance",
-        "google_bigquery_dataset", "google_bigquery_table",
-        "google_service_account", "google_project_service",
-        "google_compute_network", "google_compute_subnetwork",
-        "google_storage_bucket_iam_member", "google_storage_bucket_iam_binding",
-        "google_project_iam_member", "google_project_iam_binding",
-        "google_cloud_run_service_iam_member", "google_cloud_run_service_iam_binding"
+        "google_compute_instance", "google_compute_network", "google_compute_subnetwork",
+        "google_compute_firewall", "google_compute_address",
+        "google_compute_router", "google_compute_router_nat",
+        "google_storage_bucket", "google_storage_bucket_iam_member", "google_storage_bucket_iam_binding",
+        "google_bigquery_dataset", "google_bigquery_table", "google_bigquery_data_transfer_config",
+        "google_sql_database_instance", "google_sql_database", "google_sql_user",
+        "google_cloud_run_service", "google_cloud_run_service_iam_member", "google_cloud_run_service_iam_binding",
+        "google_artifact_registry_repository",
+        "google_service_account", "google_service_account_iam_member", "google_service_account_iam_binding",
+        "google_project_iam_member", "google_project_iam_binding", "google_project_service",
+        "google_secret_manager_secret", "google_secret_manager_secret_version",
+        "google_pubsub_topic", "google_pubsub_subscription",
+        "google_cloudfunctions2_function", "google_cloud_scheduler_job",
+        "google_vpc_access_connector",
+        "google_iam_workload_identity_pool", "google_iam_workload_identity_pool_provider",
+        "google_firestore_database", "google_dns_managed_zone", "google_dns_record_set"
     ],
     "cost_estimates_eur_monthly": {
         "google_compute_instance": 25.0,
         "google_storage_bucket": 2.0,
-        "google_sql_database_instance": 50.0
+        "google_bigquery_table": 5.0,
+        "google_sql_database_instance": 50.0,
+        "google_cloudfunctions2_function": 10.0,
+        "google_cloud_scheduler_job": 0.1
     },
     "gpu_machine_type_prefixes": ["a2-", "g2-", "a3-"],
     "gpu_approval_flag": "cloud_seed_gpu_approved",
@@ -208,6 +230,78 @@ gpu_approved_plan := {
                         "team": "ml"
                     },
                     "guest_accelerator": []
+                }
+            }
+        }
+    ]
+}
+
+data_pipeline_plan := {
+    "resource_changes": [
+        {
+            "address": "google_bigquery_dataset.api_data",
+            "type": "google_bigquery_dataset",
+            "change": {
+                "actions": ["create"],
+                "after": {
+                    "dataset_id": "api-data",
+                    "location": "EU"
+                }
+            }
+        },
+        {
+            "address": "google_bigquery_table.daily_records",
+            "type": "google_bigquery_table",
+            "change": {
+                "actions": ["create"],
+                "after": {
+                    "table_id": "daily-records",
+                    "dataset_id": "api-data"
+                }
+            }
+        },
+        {
+            "address": "google_storage_bucket.csv_landing",
+            "type": "google_storage_bucket",
+            "change": {
+                "actions": ["create"],
+                "after": {
+                    "name": "acme-csv-landing",
+                    "location": "europe-west1",
+                    "encryption": [{"default_kms_key_name": "key"}]
+                }
+            }
+        },
+        {
+            "address": "google_cloudfunctions2_function.api_fetcher",
+            "type": "google_cloudfunctions2_function",
+            "change": {
+                "actions": ["create"],
+                "after": {
+                    "name": "acme-api-fetcher",
+                    "location": "europe-west1"
+                }
+            }
+        },
+        {
+            "address": "google_cloud_scheduler_job.daily_trigger",
+            "type": "google_cloud_scheduler_job",
+            "change": {
+                "actions": ["create"],
+                "after": {
+                    "name": "acme-daily-trigger",
+                    "region": "europe-west1"
+                }
+            }
+        },
+        {
+            "address": "google_bigquery_data_transfer_config.csv_sync",
+            "type": "google_bigquery_data_transfer_config",
+            "change": {
+                "actions": ["create"],
+                "after": {
+                    "display_name": "acme-csv-sync",
+                    "location": "EU"
                 }
             }
         }
