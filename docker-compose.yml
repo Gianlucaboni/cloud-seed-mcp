@@ -15,10 +15,12 @@ services:
       - CORE_MCP_HOST=${CORE_MCP_HOST}
       - CORE_MCP_PORT=${CORE_MCP_PORT}
       - CORE_MCP_TEMPLATES_DIR=/app/templates
+      - UVICORN_HOST=0.0.0.0
+      - UVICORN_PORT=8000
     volumes:
       - ./templates:/app/templates:ro
     healthcheck:
-      test: ["CMD", "wget", "--spider", "--quiet", "http://localhost:8000/health"]
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health')\""]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -32,7 +34,7 @@ services:
     volumes:
       - ./policy-engine/policies:/policies:ro
     healthcheck:
-      test: ["CMD", "wget", "--spider", "--quiet", "http://localhost:8181/health"]
+      test: ["CMD", "/opa", "eval", "true"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -53,7 +55,7 @@ services:
       - TOOL_FORGE_PORT=8001
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
     healthcheck:
-      test: ["CMD", "wget", "--spider", "--quiet", "http://localhost:8001/health"]
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8001/health')\""]
       interval: 10s
       timeout: 5s
       retries: 5
