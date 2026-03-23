@@ -20,7 +20,7 @@ services:
     volumes:
       - ./templates:/app/templates:ro
       - terraform-data:/opt/cloud-seed-mcp/projects
-      - ${HOME}/.config/gcloud:/root/.config/gcloud:ro
+      - gcloud-config:/root/.config/gcloud
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health')\""]
       interval: 10s
@@ -86,6 +86,7 @@ services:
 volumes:
   pgdata:
   terraform-data:
+  gcloud-config:
 
 networks:
   seed-net:
