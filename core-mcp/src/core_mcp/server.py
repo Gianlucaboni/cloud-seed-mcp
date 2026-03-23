@@ -6,6 +6,8 @@ from dataclasses import dataclass
 
 import asyncpg
 from mcp.server.fastmcp import FastMCP
+from starlette.requests import Request
+from starlette.responses import JSONResponse
 
 from core_mcp.config import Settings
 from core_mcp.tool_loader import load_tools_from_registry, poll_registry
@@ -65,6 +67,12 @@ terraform.register(mcp)
 github.register(mcp)
 cloudrun.register(mcp)
 database.register(mcp)
+
+
+@mcp.custom_route("/health", methods=["GET"])
+async def health_check(request: Request) -> JSONResponse:
+    """Health check endpoint for Docker Compose and load balancer probes."""
+    return JSONResponse({"status": "ok"})
 
 
 if __name__ == "__main__":

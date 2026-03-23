@@ -16,8 +16,9 @@ COPY pyproject.toml ./
 # Copy source
 COPY src/ src/
 
-# Install the package
-RUN uv pip install --system .
+# Install the package with dev extras (httpx needed by FastAPI TestClient;
+# pytest is also a runtime dep for running generated tool tests)
+RUN uv pip install --system ".[dev]"
 
 # Default entrypoint — can be overridden in docker-compose
 CMD ["python", "-m", "tool_forge"]

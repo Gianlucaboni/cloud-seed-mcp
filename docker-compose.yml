@@ -42,11 +42,22 @@ services:
 
   tool-forge:
     build: ./tool-forge
+    ports:
+      - "8001:8001"
     depends_on:
       state-store:
         condition: service_healthy
     environment:
       - CORE_MCP_DATABASE_URL=${CORE_MCP_DATABASE_URL}
+      - TOOL_FORGE_HOST=0.0.0.0
+      - TOOL_FORGE_PORT=8001
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "--quiet", "http://localhost:8001/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
     networks:
       - seed-net
 
