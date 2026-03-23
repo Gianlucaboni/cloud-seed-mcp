@@ -11,7 +11,7 @@ from starlette.responses import JSONResponse
 
 from core_mcp.config import Settings
 from core_mcp.tool_loader import load_tools_from_registry, poll_registry
-from core_mcp.tools import terraform, github, cloudrun, database
+from core_mcp.tools import terraform, github, cloudrun, database, project
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +67,7 @@ terraform.register(mcp)
 github.register(mcp)
 cloudrun.register(mcp)
 database.register(mcp)
+project.register(mcp)
 
 
 @mcp.custom_route("/health", methods=["GET"])
