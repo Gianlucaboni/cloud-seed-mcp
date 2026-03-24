@@ -29,7 +29,7 @@ resource "google_iam_deny_policy" "deny_project_deletion" {
     description = "Block the Orchestrator SA from deleting any GCP project"
     deny_rule {
       denied_principals = [
-        "principalSet://goog/subject/${google_service_account.orchestrator.email}",
+        "principal://iam.googleapis.com/projects/-/serviceAccounts/${google_service_account.orchestrator.email}",
       ]
       denied_permissions = [
         "cloudresourcemanager.googleapis.com/projects.delete",
@@ -53,10 +53,10 @@ resource "google_iam_deny_policy" "deny_modify_critical_sas" {
   display_name = "Cloud Seed: Protect Critical SAs"
 
   rules {
-    description = "Block the Orchestrator from modifying or deleting the Installer and Orchestrator SAs"
+    description = "Block the Orchestrator from modifying or deleting any SA in the seed project"
     deny_rule {
       denied_principals = [
-        "principalSet://goog/subject/${google_service_account.orchestrator.email}",
+        "principal://iam.googleapis.com/projects/-/serviceAccounts/${google_service_account.orchestrator.email}",
       ]
       denied_permissions = [
         "iam.googleapis.com/serviceAccounts.delete",
@@ -64,14 +64,6 @@ resource "google_iam_deny_policy" "deny_modify_critical_sas" {
         "iam.googleapis.com/serviceAccounts.update",
         "iam.googleapis.com/serviceAccounts.setIamPolicy",
       ]
-      denial_condition {
-        title       = "Only protect Installer and Orchestrator SAs"
-        description = "Deny applies only when the target is the Installer or Orchestrator SA"
-        expression  = <<-EOT
-          resource.name.startsWith("projects/${var.seed_project_id}/serviceAccounts/${google_service_account.installer.unique_id}") ||
-          resource.name.startsWith("projects/${var.seed_project_id}/serviceAccounts/${google_service_account.orchestrator.unique_id}")
-        EOT
-      }
     }
   }
 }
@@ -95,10 +87,14 @@ resource "google_iam_deny_policy" "deny_seed_iam_modification" {
     description = "Block the Orchestrator from modifying IAM policies on the seed project"
     deny_rule {
       denied_principals = [
-        "principalSet://goog/subject/${google_service_account.orchestrator.email}",
+        "principal://iam.googleapis.com/projects/-/serviceAccounts/${google_service_account.orchestrator.email}",
       ]
       denied_permissions = [
-        "resourcemanager.googleapis.com/projects.setIamPolicy",
+        "iam.googleapis.com/serviceAccounts.create",
+        "iam.googleapis.com/serviceAccounts.delete",
+        "iam.googleapis.com/roles.create",
+        "iam.googleapis.com/roles.delete",
+        "iam.googleapis.com/roles.update",
       ]
     }
   }
@@ -123,7 +119,7 @@ resource "google_iam_deny_policy" "deny_cross_project_secrets" {
     description = "Block the Orchestrator from accessing secrets in any project"
     deny_rule {
       denied_principals = [
-        "principalSet://goog/subject/${google_service_account.orchestrator.email}",
+        "principal://iam.googleapis.com/projects/-/serviceAccounts/${google_service_account.orchestrator.email}",
       ]
       denied_permissions = [
         "secretmanager.googleapis.com/versions.access",

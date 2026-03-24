@@ -95,14 +95,13 @@ resource "google_organization_iam_member" "orchestrator_project_creator" {
   member = "serviceAccount:${google_service_account.orchestrator.email}"
 }
 
-# Orchestrator can link billing accounts to projects
-resource "google_billing_account_iam_member" "orchestrator_billing_user" {
-  count = var.billing_account_id != "" ? 1 : 0
-
-  billing_account_id = var.billing_account_id
-  role               = "roles/billing.user"
-  member             = "serviceAccount:${google_service_account.orchestrator.email}"
-}
+# NOTE: Billing account binding (roles/billing.user) must be granted
+# separately by the billing account admin via gcloud:
+#   gcloud billing accounts add-iam-policy-binding BILLING_ACCOUNT_ID \
+#     --member="serviceAccount:ORCHESTRATOR_SA_EMAIL" \
+#     --role="roles/billing.user"
+# This cannot be done in Terraform when the billing account belongs
+# to a different GCP account than the one running the bootstrap.
 
 # ─── Orchestrator permissions on CLIENT projects ─────────────────────────────
 # Applied per client project via for_each
@@ -183,7 +182,6 @@ resource "google_project_iam_custom_role" "orchestrator_ops" {
 
     # Resource manager (read)
     "resourcemanager.projects.get",
-    "resourcemanager.projects.list",
   ]
 }
 

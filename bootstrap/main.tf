@@ -45,7 +45,7 @@ resource "google_project_service" "required_apis" {
 resource "google_iam_workload_identity_pool" "github" {
   provider                  = google-beta
   workload_identity_pool_id = "cloudseed-github-pool"
-  display_name              = "Cloud Seed — GitHub Actions Pool"
+  display_name              = "Cloud Seed GitHub Pool"
   description               = "WIF pool for GitHub Actions CI/CD across all client projects"
   project                   = var.seed_project_id
   disabled                  = false
