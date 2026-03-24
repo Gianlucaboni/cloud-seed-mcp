@@ -9,6 +9,7 @@ class Settings(BaseSettings):
     port: int = 8000
     templates_dir: str = "/app/templates"
     bootstrap_dir: str = "/app/bootstrap"
+    bootstrap_projects_dir: str = "/app/bootstrap/projects"
     seed_project_id: str = ""
     org_id: str = ""
 

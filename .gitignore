@@ -20,6 +20,8 @@ build/
 *.tfstate
 *.tfstate.*
 *.tfplan
+*.auto.tfvars
+*.auto.tfvars.json
 .terraform/
 .terraform.lock.hcl
 crash.log

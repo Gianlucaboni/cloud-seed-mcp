@@ -58,10 +58,23 @@ if [ ! -f /root/.config/gcloud/application_default_credentials.json ]; then
     }
 fi
 
-# ─── Create .env ─────────────────────────────────────────────────────────────
-if [ ! -f .env ]; then
-    echo "Creating .env from .env.example..."
-    cp .env.example .env
+# ─── Create .env with GCP project context ────────────────────────────────────
+echo "Creating .env with auto-detected GCP context..."
+SEED_PROJECT_ID=$(curl -s -H "Metadata-Flavor: Google" \
+    "http://metadata.google.internal/computeMetadata/v1/project/project-id" 2>/dev/null || echo "")
+ORG_ID=$(gcloud projects describe "$SEED_PROJECT_ID" \
+    --format="value(parent.id)" 2>/dev/null || echo "")
+
+cp .env.example .env
+
+# Inject actual values into .env
+if [ -n "$SEED_PROJECT_ID" ]; then
+    sed -i "s|^CORE_MCP_SEED_PROJECT_ID=.*|CORE_MCP_SEED_PROJECT_ID=${SEED_PROJECT_ID}|" .env
+    echo "Detected seed project: $SEED_PROJECT_ID"
+fi
+if [ -n "$ORG_ID" ]; then
+    sed -i "s|^CORE_MCP_ORG_ID=.*|CORE_MCP_ORG_ID=${ORG_ID}|" .env
+    echo "Detected org ID: $ORG_ID"
 fi
 
 # ─── Export HOME for docker-compose volume mount ─────────────────────────────

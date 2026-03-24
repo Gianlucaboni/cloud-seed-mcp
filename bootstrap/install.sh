@@ -107,7 +107,7 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # ─── Step 1: Validate prerequisites ─────────────────────────────────────────
-log_step "Step 1/5: Validating prerequisites"
+log_step "Step 1/7: Validating prerequisites"
 
 # Check gcloud
 if ! command -v gcloud &> /dev/null; then
@@ -144,7 +144,7 @@ if ! gcloud organizations describe "$ORG_ID" &> /dev/null; then
 fi
 
 # ─── Step 2: Enable required APIs ───────────────────────────────────────────
-log_step "Step 2/6: Enabling required GCP APIs"
+log_step "Step 2/7: Enabling required GCP APIs"
 
 # Auto-detect billing account if not provided
 if [[ -z "$BILLING_ACCOUNT_ID" ]]; then
@@ -182,15 +182,26 @@ for api in "${REQUIRED_APIS[@]}"; do
 done
 log_ok "Required APIs enabled"
 
+# Disable GCP default service accounts (overly broad permissions)
+PROJECT_NUMBER=$(gcloud projects describe "$SEED_PROJECT_ID" --format="value(projectNumber)" 2>/dev/null)
+if [[ -n "$PROJECT_NUMBER" ]]; then
+  DEFAULT_COMPUTE_SA="${PROJECT_NUMBER}-compute@developer.gserviceaccount.com"
+  if gcloud iam service-accounts describe "$DEFAULT_COMPUTE_SA" --project="$SEED_PROJECT_ID" &>/dev/null; then
+    gcloud iam service-accounts disable "$DEFAULT_COMPUTE_SA" --project="$SEED_PROJECT_ID" --quiet 2>/dev/null && \
+      log_ok "Disabled default Compute Engine SA: $DEFAULT_COMPUTE_SA" || \
+      log_warn "Could not disable default Compute SA (may already be disabled)"
+  fi
+fi
+
 # ─── Step 3: Terraform init ─────────────────────────────────────────────────
-log_step "Step 3/6: Initializing Terraform"
+log_step "Step 3/7: Initializing Terraform"
 
 cd "$SCRIPT_DIR"
 terraform init -input=false
 log_ok "Terraform initialized"
 
 # ─── Step 4: Terraform plan + apply ─────────────────────────────────────────
-log_step "Step 4/6: Planning and applying SA hierarchy"
+log_step "Step 4/7: Planning and applying SA hierarchy"
 
 # Write tfvars for this run
 cat > "$SCRIPT_DIR/bootstrap.auto.tfvars" <<EOF
@@ -222,8 +233,29 @@ log_ok "Terraform apply complete — SA hierarchy created"
 # Clean up plan file
 rm -f bootstrap.tfplan
 
-# ─── Step 5: Disable the Installer SA ───────────────────────────────────────
-log_step "Step 5/6: Disabling Installer SA"
+# ─── Step 5: Grant billing.user to Orchestrator SA ────────────────────────
+log_step "Step 5/7: Granting billing access to Orchestrator SA"
+
+ORCHESTRATOR_SA_EMAIL=$(terraform output -raw orchestrator_sa_email 2>/dev/null)
+
+if [[ -n "$BILLING_ACCOUNT_ID" ]] && [[ -n "$ORCHESTRATOR_SA_EMAIL" ]]; then
+  log_info "Granting roles/billing.user on billing account $BILLING_ACCOUNT_ID"
+  gcloud billing accounts add-iam-policy-binding "$BILLING_ACCOUNT_ID" \
+    --member="serviceAccount:$ORCHESTRATOR_SA_EMAIL" \
+    --role="roles/billing.user" \
+    --quiet 2>/dev/null && \
+    log_ok "Billing access granted to Orchestrator SA" || \
+    log_warn "Could not grant billing access. You may need to run manually:
+  gcloud billing accounts add-iam-policy-binding $BILLING_ACCOUNT_ID \\
+    --member=\"serviceAccount:$ORCHESTRATOR_SA_EMAIL\" \\
+    --role=\"roles/billing.user\""
+else
+  log_warn "Skipping billing binding (no billing account or orchestrator SA found)."
+  log_warn "The Orchestrator won't be able to link billing to new projects."
+fi
+
+# ─── Step 6: Disable the Installer SA ───────────────────────────────────────
+log_step "Step 6/7: Disabling Installer SA"
 
 INSTALLER_SA_EMAIL=$(terraform output -raw installer_sa_email 2>/dev/null)
 
@@ -248,12 +280,13 @@ else
   log_info "To re-enable (emergency only): gcloud iam service-accounts enable $INSTALLER_SA_EMAIL"
 fi
 
-# ─── Step 6: Create seed VM ──────────────────────────────────────────────────
+# ─── Step 7: Create seed VM ──────────────────────────────────────────────────
 if [[ "$SKIP_VM" == true ]]; then
   log_warn "Skipping VM creation (--skip-vm flag set)."
 else
-  log_step "Step 6/6: Creating seed VM with Orchestrator SA"
+  log_step "Step 7/7: Creating seed VM with Orchestrator SA"
 
+  # Re-read in case it wasn't set earlier (e.g. billing step was skipped)
   ORCHESTRATOR_SA_EMAIL=$(terraform output -raw orchestrator_sa_email 2>/dev/null)
 
   if [[ -z "$ORCHESTRATOR_SA_EMAIL" ]]; then

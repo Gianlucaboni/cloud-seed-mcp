@@ -32,71 +32,44 @@ _DEFAULT_APIS = [
 
 
 def _read_client_projects(tfvars_path: str) -> dict:
-    """Read existing client_projects from the bootstrap tfvars file.
+    """Read existing client_projects from the projects tfvars JSON file.
 
     Returns a dict of {name: {project_id, github_repo}}.
-    Parses the HCL-like tfvars format.
     """
-    projects: dict = {}
     if not os.path.isfile(tfvars_path):
-        return projects
+        return {}
 
     with open(tfvars_path) as f:
-        content = f.read()
-
-    # Simple parser: look for client_projects JSON block if present
-    # We write it as JSON-compatible HCL, so we can parse it back
-    import re
-    match = re.search(
-        r'client_projects\s*=\s*(\{.*?\})\s*$',
-        content,
-        re.DOTALL | re.MULTILINE,
-    )
-    if match:
         try:
-            # HCL uses = instead of :, convert for JSON parsing
-            hcl_block = match.group(1)
-            # Replace = with : and unquoted keys with quoted keys
-            json_str = hcl_block.replace("=", ":")
-            projects = json.loads(json_str)
+            data = json.load(f)
         except (json.JSONDecodeError, ValueError):
-            pass
+            return {}
 
-    return projects
+    return data.get("client_projects", {})
 
 
-def _write_tfvars(
+def _write_projects_tfvars(
     tfvars_path: str,
     seed_project_id: str,
     org_id: str,
+    wif_pool_name: str,
     client_projects: dict,
 ) -> None:
-    """Write the bootstrap.auto.tfvars file with updated client_projects."""
-    # Build client_projects HCL block
-    if client_projects:
-        entries = []
-        for name, config in client_projects.items():
-            project_id = config.get("project_id", name)
-            github_repo = config.get("github_repo", "")
-            entries.append(
-                f'  {name} = {{\n'
-                f'    project_id  = "{project_id}"\n'
-                f'    github_repo = "{github_repo}"\n'
-                f'  }}'
-            )
-        projects_block = "{\n" + "\n".join(entries) + "\n}"
-    else:
-        projects_block = "{}"
+    """Write the projects.auto.tfvars.json file with updated client_projects.
 
-    content = textwrap.dedent(f"""\
-        seed_project_id = "{seed_project_id}"
-        org_id          = "{org_id}"
-
-        client_projects = {projects_block}
-    """)
+    Uses JSON format (.auto.tfvars.json) which Terraform natively supports.
+    This avoids HCL parsing issues and makes round-tripping trivial.
+    """
+    data = {
+        "seed_project_id": seed_project_id,
+        "org_id": org_id,
+        "wif_pool_name": wif_pool_name,
+        "client_projects": client_projects,
+    }
 
     with open(tfvars_path, "w") as f:
-        f.write(content)
+        json.dump(data, f, indent=2)
+        f.write("\n")
 
 
 def register(mcp: FastMCP) -> None:
@@ -216,21 +189,35 @@ def register(mcp: FastMCP) -> None:
 
         lines.append(f"Terraform directory ready: {tf_dir}")
 
-        # ── 5. Provision SA hierarchy via bootstrap terraform ────────
-        bootstrap_dir = settings.bootstrap_dir
-        tfvars_path = os.path.join(bootstrap_dir, "bootstrap.auto.tfvars")
+        # ── 5. Provision SA hierarchy via bootstrap/projects terraform ─
+        # This uses a SEPARATE terraform root module that manages ONLY
+        # per-project SAs (Runtime, Deploy, Data). It never touches the
+        # one-time infra (SA Installer, deny policies, WIF pool, etc.).
+        projects_dir = settings.bootstrap_projects_dir
+        tfvars_path = os.path.join(projects_dir, "projects.auto.tfvars.json")
 
         if not settings.seed_project_id or not settings.org_id:
             lines.append(
                 "Warning: CORE_MCP_SEED_PROJECT_ID and CORE_MCP_ORG_ID not set. "
                 "Skipping SA hierarchy provisioning. Set these env vars and retry."
             )
-        elif not os.path.isdir(bootstrap_dir):
+        elif not os.path.isdir(projects_dir):
             lines.append(
-                f"Warning: bootstrap directory '{bootstrap_dir}' not found. "
+                f"Warning: projects directory '{projects_dir}' not found. "
                 "Skipping SA hierarchy provisioning."
             )
         else:
+            # Read WIF pool name from main bootstrap terraform output
+            wif_pool_name = ""
+            bootstrap_dir = settings.bootstrap_dir
+            wif_result = await run_command(
+                "terraform", "output", "-raw", "wif_pool_name",
+                "-no-color",
+                cwd=bootstrap_dir,
+            )
+            if wif_result.success and wif_result.stdout.strip():
+                wif_pool_name = wif_result.stdout.strip()
+
             # Read existing client projects, add the new one
             existing = _read_client_projects(tfvars_path)
             existing[project_id] = {
@@ -238,18 +225,19 @@ def register(mcp: FastMCP) -> None:
                 "github_repo": github_repo,
             }
 
-            _write_tfvars(
+            _write_projects_tfvars(
                 tfvars_path,
                 settings.seed_project_id,
                 settings.org_id,
+                wif_pool_name,
                 existing,
             )
-            lines.append("Updated bootstrap.auto.tfvars with new client project.")
+            lines.append("Updated projects.auto.tfvars.json with new client project.")
 
             # terraform init
             init_result = await run_command(
                 "terraform", "init", "-input=false", "-no-color",
-                cwd=bootstrap_dir,
+                cwd=projects_dir,
             )
             if not init_result.success:
                 lines.append(f"Warning: terraform init failed — {init_result.stderr}")
@@ -258,7 +246,7 @@ def register(mcp: FastMCP) -> None:
                 apply_result = await run_command(
                     "terraform", "apply",
                     "-input=false", "-no-color", "-auto-approve",
-                    cwd=bootstrap_dir,
+                    cwd=projects_dir,
                     timeout=300.0,
                 )
                 if apply_result.success:
