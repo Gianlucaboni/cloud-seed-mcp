@@ -68,7 +68,7 @@ resource "google_service_account" "orchestrator" {
 # Orchestrator can create and manage per-project SAs in the seed project
 resource "google_project_iam_member" "orchestrator_sa_creator" {
   project = var.seed_project_id
-  role    = "roles/iam.serviceAccountCreator"
+  role    = "roles/iam.serviceAccountAdmin"
   member  = "serviceAccount:${google_service_account.orchestrator.email}"
 }
 
