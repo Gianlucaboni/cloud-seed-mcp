@@ -79,6 +79,14 @@ resource "google_project_iam_member" "orchestrator_iam_viewer" {
   member  = "serviceAccount:${google_service_account.orchestrator.email}"
 }
 
+# Orchestrator can bind IAM roles on the seed project
+# (needed to assign roles to per-project SAs created here)
+resource "google_project_iam_member" "orchestrator_seed_iam_admin" {
+  project = var.seed_project_id
+  role    = "roles/resourcemanager.projectIamAdmin"
+  member  = "serviceAccount:${google_service_account.orchestrator.email}"
+}
+
 # Orchestrator can manage Cloud Scheduler (for ephemeral SA TTL)
 resource "google_project_iam_member" "orchestrator_scheduler_admin" {
   project = var.seed_project_id
