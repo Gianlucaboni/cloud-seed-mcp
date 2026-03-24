@@ -61,8 +61,6 @@ resource "google_iam_deny_policy" "deny_modify_critical_sas" {
       denied_permissions = [
         "iam.googleapis.com/serviceAccounts.delete",
         "iam.googleapis.com/serviceAccounts.disable",
-        "iam.googleapis.com/serviceAccounts.update",
-        "iam.googleapis.com/serviceAccounts.setIamPolicy",
       ]
     }
   }
