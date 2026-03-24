@@ -130,6 +130,28 @@ def register(mcp: FastMCP) -> None:
         else:
             lines.append(f"Project '{project_id}' created.")
 
+        # ── 1b. Remove auto-granted Owner role ─────────────────────
+        # GCP automatically grants roles/owner to the SA that creates a
+        # project. The Orchestrator should NOT be Owner — it gets specific
+        # roles (editor, projectIamAdmin, etc.) via Terraform instead.
+        if settings.seed_project_id:
+            orchestrator_sa = (
+                f"cloudseed-orchestrator@{settings.seed_project_id}"
+                ".iam.gserviceaccount.com"
+            )
+            remove_result = await run_command(
+                "gcloud", "projects", "remove-iam-policy-binding", project_id,
+                f"--member=serviceAccount:{orchestrator_sa}",
+                "--role=roles/owner",
+                "--quiet",
+            )
+            if remove_result.success:
+                lines.append("Removed auto-granted Owner role from Orchestrator SA.")
+            else:
+                lines.append(
+                    f"Warning: could not remove Owner role — {remove_result.stderr}"
+                )
+
         # ── 2. Link billing ──────────────────────────────────────────
         if not billing_account_id:
             billing_result = await run_command(
