@@ -15,10 +15,14 @@ services:
       - CORE_MCP_HOST=${CORE_MCP_HOST}
       - CORE_MCP_PORT=${CORE_MCP_PORT}
       - CORE_MCP_TEMPLATES_DIR=/app/templates
+      - CORE_MCP_BOOTSTRAP_DIR=/app/bootstrap
+      - CORE_MCP_SEED_PROJECT_ID=${CORE_MCP_SEED_PROJECT_ID}
+      - CORE_MCP_ORG_ID=${CORE_MCP_ORG_ID}
       - UVICORN_HOST=0.0.0.0
       - UVICORN_PORT=8000
     volumes:
       - ./templates:/app/templates:ro
+      - ./bootstrap:/app/bootstrap
       - terraform-data:/opt/cloud-seed-mcp/projects
       - gcloud-config:/root/.config/gcloud
     healthcheck:

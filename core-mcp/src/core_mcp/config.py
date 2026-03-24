@@ -8,5 +8,8 @@ class Settings(BaseSettings):
     host: str = "0.0.0.0"
     port: int = 8000
     templates_dir: str = "/app/templates"
+    bootstrap_dir: str = "/app/bootstrap"
+    seed_project_id: str = ""
+    org_id: str = ""
 
     model_config = {"env_prefix": "CORE_MCP_"}

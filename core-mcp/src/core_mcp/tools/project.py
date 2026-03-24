@@ -1,7 +1,8 @@
 """GCP project lifecycle management tools for the Core MCP server.
 
-Creates new client projects, enables required APIs, and prepares the
-Terraform working directory for resource provisioning.
+Creates new client projects, enables required APIs, prepares the
+Terraform working directory, and provisions the per-project SA
+hierarchy via the bootstrap Terraform module.
 """
 
 from __future__ import annotations
@@ -12,6 +13,7 @@ import textwrap
 
 from mcp.server.fastmcp import FastMCP
 
+from core_mcp.config import Settings
 from core_mcp.tools._subprocess import run_command
 
 
@@ -25,7 +27,76 @@ _DEFAULT_APIS = [
     "cloudbuild.googleapis.com",
     "sqladmin.googleapis.com",
     "cloudscheduler.googleapis.com",
+    "iam.googleapis.com",
 ]
+
+
+def _read_client_projects(tfvars_path: str) -> dict:
+    """Read existing client_projects from the bootstrap tfvars file.
+
+    Returns a dict of {name: {project_id, github_repo}}.
+    Parses the HCL-like tfvars format.
+    """
+    projects: dict = {}
+    if not os.path.isfile(tfvars_path):
+        return projects
+
+    with open(tfvars_path) as f:
+        content = f.read()
+
+    # Simple parser: look for client_projects JSON block if present
+    # We write it as JSON-compatible HCL, so we can parse it back
+    import re
+    match = re.search(
+        r'client_projects\s*=\s*(\{.*?\})\s*$',
+        content,
+        re.DOTALL | re.MULTILINE,
+    )
+    if match:
+        try:
+            # HCL uses = instead of :, convert for JSON parsing
+            hcl_block = match.group(1)
+            # Replace = with : and unquoted keys with quoted keys
+            json_str = hcl_block.replace("=", ":")
+            projects = json.loads(json_str)
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+    return projects
+
+
+def _write_tfvars(
+    tfvars_path: str,
+    seed_project_id: str,
+    org_id: str,
+    client_projects: dict,
+) -> None:
+    """Write the bootstrap.auto.tfvars file with updated client_projects."""
+    # Build client_projects HCL block
+    if client_projects:
+        entries = []
+        for name, config in client_projects.items():
+            project_id = config.get("project_id", name)
+            github_repo = config.get("github_repo", "")
+            entries.append(
+                f'  {name} = {{\n'
+                f'    project_id  = "{project_id}"\n'
+                f'    github_repo = "{github_repo}"\n'
+                f'  }}'
+            )
+        projects_block = "{\n" + "\n".join(entries) + "\n}"
+    else:
+        projects_block = "{}"
+
+    content = textwrap.dedent(f"""\
+        seed_project_id = "{seed_project_id}"
+        org_id          = "{org_id}"
+
+        client_projects = {projects_block}
+    """)
+
+    with open(tfvars_path, "w") as f:
+        f.write(content)
 
 
 def register(mcp: FastMCP) -> None:
@@ -35,17 +106,18 @@ def register(mcp: FastMCP) -> None:
         display_name: str = "",
         region: str = "europe-west1",
         billing_account_id: str = "",
+        github_repo: str = "",
         tf_base_dir: str = "/opt/cloud-seed-mcp/projects",
     ) -> str:
-        """Create a new GCP project and prepare it for resource provisioning.
+        """Create a new GCP project with full SA hierarchy.
 
         This is a Yellow action.  Steps:
-        1. Creates the GCP project via ``gcloud``.
+        1. Creates the GCP project under the organization via ``gcloud``.
         2. Links a billing account (required for most APIs).
         3. Enables default APIs (BigQuery, Storage, Cloud Run, etc.).
-        4. Creates a Terraform working directory with the provider
-           configuration, ready for ``database_create_dataset`` and
-           other resource tools.
+        4. Creates a Terraform working directory for the project's resources.
+        5. Updates the bootstrap configuration and runs ``terraform apply``
+           to create the per-project SA hierarchy (Runtime, Deploy, Data).
 
         Args:
             project_id: Unique GCP project identifier (6-30 chars,
@@ -56,10 +128,10 @@ def register(mcp: FastMCP) -> None:
             billing_account_id: GCP billing account ID to link.
                                 If empty, the tool will attempt to find
                                 the first available billing account.
+            github_repo: Optional GitHub repo (owner/repo) for WIF CI/CD.
             tf_base_dir: Base directory for per-project Terraform dirs.
-                         A subdirectory ``<project_id>/`` is created
-                         inside this path.
         """
+        settings = Settings()
         if not display_name:
             display_name = project_id
 
@@ -68,11 +140,12 @@ def register(mcp: FastMCP) -> None:
         # ── 1. Create project ────────────────────────────────────────
         lines.append(f"[YELLOW ACTION] Creating GCP project '{project_id}'...")
 
-        create_result = await run_command(
-            "gcloud", "projects", "create", project_id,
-            f"--name={display_name}",
-            "--quiet",
-        )
+        create_args = ["gcloud", "projects", "create", project_id,
+                       f"--name={display_name}", "--quiet"]
+        if settings.org_id:
+            create_args.extend([f"--organization={settings.org_id}"])
+
+        create_result = await run_command(*create_args)
         if not create_result.success:
             if "already exists" in create_result.stderr.lower():
                 lines.append(f"Project '{project_id}' already exists — continuing.")
@@ -142,25 +215,90 @@ def register(mcp: FastMCP) -> None:
             f.write(provider_tf)
 
         lines.append(f"Terraform directory ready: {tf_dir}")
-        lines.append(f"Provider configured for project '{project_id}', region '{region}'.")
+
+        # ── 5. Provision SA hierarchy via bootstrap terraform ────────
+        bootstrap_dir = settings.bootstrap_dir
+        tfvars_path = os.path.join(bootstrap_dir, "bootstrap.auto.tfvars")
+
+        if not settings.seed_project_id or not settings.org_id:
+            lines.append(
+                "Warning: CORE_MCP_SEED_PROJECT_ID and CORE_MCP_ORG_ID not set. "
+                "Skipping SA hierarchy provisioning. Set these env vars and retry."
+            )
+        elif not os.path.isdir(bootstrap_dir):
+            lines.append(
+                f"Warning: bootstrap directory '{bootstrap_dir}' not found. "
+                "Skipping SA hierarchy provisioning."
+            )
+        else:
+            # Read existing client projects, add the new one
+            existing = _read_client_projects(tfvars_path)
+            existing[project_id] = {
+                "project_id": project_id,
+                "github_repo": github_repo,
+            }
+
+            _write_tfvars(
+                tfvars_path,
+                settings.seed_project_id,
+                settings.org_id,
+                existing,
+            )
+            lines.append("Updated bootstrap.auto.tfvars with new client project.")
+
+            # terraform init
+            init_result = await run_command(
+                "terraform", "init", "-input=false", "-no-color",
+                cwd=bootstrap_dir,
+            )
+            if not init_result.success:
+                lines.append(f"Warning: terraform init failed — {init_result.stderr}")
+            else:
+                # terraform apply (auto-approve for SA provisioning)
+                apply_result = await run_command(
+                    "terraform", "apply",
+                    "-input=false", "-no-color", "-auto-approve",
+                    cwd=bootstrap_dir,
+                    timeout=300.0,
+                )
+                if apply_result.success:
+                    lines.append(
+                        "SA hierarchy provisioned: SA Runtime, SA Deploy, SA Data "
+                        f"created for project '{project_id}'."
+                    )
+                else:
+                    lines.append(
+                        f"Warning: terraform apply for SA hierarchy failed.\n"
+                        f"stderr: {apply_result.stderr[:500]}"
+                    )
+
         lines.append("")
         lines.append("Next steps:")
-        lines.append(f"  - Use database_create_dataset with tf_dir='{tf_dir}' to create BigQuery datasets")
+        lines.append(f"  - Use database_create_dataset with tf_dir='{tf_dir}'")
         lines.append(f"  - Use database_create_table to add tables")
         lines.append(f"  - Use terraform_plan and terraform_apply to provision resources")
 
         return "\n".join(lines)
 
     @mcp.tool()
-    async def project_list() -> str:
-        """List all GCP projects accessible to the current account.
+    async def project_list(org_only: bool = True) -> str:
+        """List GCP projects.
+
+        By default, lists only projects under the configured organization.
+        Set ``org_only=False`` to list all accessible projects.
 
         This is a Green action (read-only).
+
+        Args:
+            org_only: If True, filter to projects under the configured org.
         """
-        result = await run_command(
-            "gcloud", "projects", "list",
-            "--format=json",
-        )
+        settings = Settings()
+
+        args = ["gcloud", "projects", "list", "--format=json"]
+        if org_only and settings.org_id:
+            args.extend([f"--filter=parent.id={settings.org_id}"])
+
+        result = await run_command(*args)
         if not result.success:
             return f"Error listing projects: {result.stderr}"
 
@@ -170,12 +308,88 @@ def register(mcp: FastMCP) -> None:
             return f"Error parsing output: {result.stdout}"
 
         if not projects:
-            return "No GCP projects found."
+            scope = f"organization {settings.org_id}" if org_only and settings.org_id else "this account"
+            return f"No GCP projects found in {scope}."
 
-        lines = [f"GCP projects ({len(projects)}):"]
+        scope = f"organization {settings.org_id}" if org_only and settings.org_id else "all accessible"
+        lines = [f"GCP projects in {scope} ({len(projects)}):"]
         for p in projects:
             pid = p.get("projectId", "unknown")
             name = p.get("name", "")
             state = p.get("lifecycleState", "")
             lines.append(f"  - {pid} ({name}) [{state}]")
+        return "\n".join(lines)
+
+    @mcp.tool()
+    async def project_resources(
+        project_id: str,
+        tf_base_dir: str = "/opt/cloud-seed-mcp/projects",
+    ) -> str:
+        """List all resources defined or deployed for a project.
+
+        Shows both the Terraform-declared resources (from .tf files) and
+        the actually deployed resources (from terraform state).
+        This is a Green action (read-only).
+
+        Args:
+            project_id: GCP project identifier.
+            tf_base_dir: Base directory for per-project Terraform dirs.
+        """
+        tf_dir = os.path.join(tf_base_dir, project_id)
+
+        if not os.path.isdir(tf_dir):
+            return (
+                f"No Terraform directory found for project '{project_id}' "
+                f"at {tf_dir}. Has it been created with project_create?"
+            )
+
+        lines = [f"Resources for project '{project_id}':", f"Terraform dir: {tf_dir}", ""]
+
+        # ── Declared resources (scan .tf files) ──────────────────────
+        tf_files = sorted(
+            f for f in os.listdir(tf_dir)
+            if f.endswith(".tf") and f != "provider.tf"
+        )
+
+        if tf_files:
+            lines.append(f"Declared in .tf files ({len(tf_files)}):")
+            for tf_file in tf_files:
+                filepath = os.path.join(tf_dir, tf_file)
+                with open(filepath) as f:
+                    content = f.read()
+
+                # Extract resource types and names from HCL
+                import re
+                resources = re.findall(
+                    r'resource\s+"(\S+)"\s+"(\S+)"',
+                    content,
+                )
+                for rtype, rname in resources:
+                    lines.append(f"  - {rtype}.{rname}  ({tf_file})")
+
+                if not resources:
+                    lines.append(f"  - {tf_file}  (no resource blocks)")
+        else:
+            lines.append("Declared: none (no .tf files besides provider.tf)")
+
+        # ── Deployed resources (terraform state) ─────────────────────
+        lines.append("")
+        state_result = await run_command(
+            "terraform", "state", "list",
+            cwd=tf_dir,
+        )
+
+        if state_result.success and state_result.stdout.strip():
+            resources = [r for r in state_result.stdout.splitlines() if r.strip()]
+            lines.append(f"Deployed (in terraform state) ({len(resources)}):")
+            for r in resources:
+                lines.append(f"  - {r}")
+        elif state_result.success:
+            lines.append("Deployed: none (empty state — run terraform_apply to provision)")
+        else:
+            if "no state" in state_result.stderr.lower() or "does not exist" in state_result.stderr.lower():
+                lines.append("Deployed: none (no terraform state file yet)")
+            else:
+                lines.append("Deployed: could not read state")
+
         return "\n".join(lines)
