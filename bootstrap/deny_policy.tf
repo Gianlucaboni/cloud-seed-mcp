@@ -88,9 +88,6 @@ resource "google_iam_deny_policy" "deny_seed_iam_modification" {
         "principal://iam.googleapis.com/projects/-/serviceAccounts/${google_service_account.orchestrator.email}",
       ]
       denied_permissions = [
-        "iam.googleapis.com/serviceAccounts.create",
-        "iam.googleapis.com/serviceAccounts.delete",
-        "iam.googleapis.com/roles.create",
         "iam.googleapis.com/roles.delete",
         "iam.googleapis.com/roles.update",
       ]
