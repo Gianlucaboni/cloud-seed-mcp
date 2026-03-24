@@ -86,6 +86,24 @@ resource "google_project_iam_member" "orchestrator_scheduler_admin" {
   member  = "serviceAccount:${google_service_account.orchestrator.email}"
 }
 
+# ─── Orchestrator permissions at ORGANIZATION level ──────────────────────────
+
+# Orchestrator can create new projects under the organization
+resource "google_organization_iam_member" "orchestrator_project_creator" {
+  org_id = var.org_id
+  role   = "roles/resourcemanager.projectCreator"
+  member = "serviceAccount:${google_service_account.orchestrator.email}"
+}
+
+# Orchestrator can link billing accounts to projects
+resource "google_billing_account_iam_member" "orchestrator_billing_user" {
+  count = var.billing_account_id != "" ? 1 : 0
+
+  billing_account_id = var.billing_account_id
+  role               = "roles/billing.user"
+  member             = "serviceAccount:${google_service_account.orchestrator.email}"
+}
+
 # ─── Orchestrator permissions on CLIENT projects ─────────────────────────────
 # Applied per client project via for_each
 

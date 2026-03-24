@@ -27,6 +27,8 @@ resource "google_project_service" "required_apis" {
     "bigquery.googleapis.com",            # For BigQuery management
     "storage.googleapis.com",             # For GCS management
     "serviceusage.googleapis.com",        # For API management
+    "compute.googleapis.com",             # For VM management
+    "cloudbilling.googleapis.com",        # For billing management
   ])
 
   project = var.seed_project_id

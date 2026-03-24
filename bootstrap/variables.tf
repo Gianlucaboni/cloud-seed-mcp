@@ -22,6 +22,12 @@ variable "org_id" {
   }
 }
 
+variable "billing_account_id" {
+  description = "GCP billing account ID to link to new projects. If empty, billing binding is skipped."
+  type        = string
+  default     = ""
+}
+
 variable "default_region" {
   description = "Default GCP region for resources"
   type        = string

@@ -32,8 +32,12 @@ log_step()  { echo -e "\n${GREEN}━━━ $* ━━━${NC}\n"; }
 # ─── Parse arguments ─────────────────────────────────────────────────────────
 SEED_PROJECT_ID=""
 ORG_ID=""
+BILLING_ACCOUNT_ID=""
+VM_ZONE="europe-west1-b"
+VM_MACHINE_TYPE="e2-medium"
 AUTO_APPROVE=false
 SKIP_DISABLE=false
+SKIP_VM=false
 
 usage() {
   cat <<EOF
@@ -44,8 +48,12 @@ Required:
   --org-id=ID            GCP organization ID (numeric)
 
 Options:
+  --billing-account=ID   Billing account ID to link (auto-detected if omitted)
+  --vm-zone=ZONE         GCP zone for the seed VM (default: europe-west1-b)
+  --vm-machine-type=TYPE Machine type for the VM (default: e2-medium)
   --auto-approve         Skip terraform apply confirmation prompt
   --skip-disable         Do not disable the Installer SA (for development only)
+  --skip-vm              Do not create the seed VM (SA hierarchy only)
   --help                 Show this help message
 
 Example:
@@ -62,11 +70,23 @@ for arg in "$@"; do
     --org-id=*)
       ORG_ID="${arg#*=}"
       ;;
+    --billing-account=*)
+      BILLING_ACCOUNT_ID="${arg#*=}"
+      ;;
+    --vm-zone=*)
+      VM_ZONE="${arg#*=}"
+      ;;
+    --vm-machine-type=*)
+      VM_MACHINE_TYPE="${arg#*=}"
+      ;;
     --auto-approve)
       AUTO_APPROVE=true
       ;;
     --skip-disable)
       SKIP_DISABLE=true
+      ;;
+    --skip-vm)
+      SKIP_VM=true
       ;;
     --help|-h)
       usage
@@ -124,7 +144,17 @@ if ! gcloud organizations describe "$ORG_ID" &> /dev/null; then
 fi
 
 # ─── Step 2: Enable required APIs ───────────────────────────────────────────
-log_step "Step 2/5: Enabling required GCP APIs"
+log_step "Step 2/6: Enabling required GCP APIs"
+
+# Auto-detect billing account if not provided
+if [[ -z "$BILLING_ACCOUNT_ID" ]]; then
+  BILLING_ACCOUNT_ID=$(gcloud billing accounts list --filter=open=true --format="value(ACCOUNT_ID)" --limit=1 2>/dev/null || true)
+  if [[ -n "$BILLING_ACCOUNT_ID" ]]; then
+    log_ok "Auto-detected billing account: $BILLING_ACCOUNT_ID"
+  else
+    log_warn "No billing account found. Project creation and API enablement may fail."
+  fi
+fi
 
 REQUIRED_APIS=(
   "iam.googleapis.com"
@@ -134,6 +164,14 @@ REQUIRED_APIS=(
   "cloudscheduler.googleapis.com"
   "pubsub.googleapis.com"
   "serviceusage.googleapis.com"
+  "compute.googleapis.com"
+  "cloudbilling.googleapis.com"
+  "run.googleapis.com"
+  "artifactregistry.googleapis.com"
+  "cloudbuild.googleapis.com"
+  "sqladmin.googleapis.com"
+  "bigquery.googleapis.com"
+  "storage.googleapis.com"
 )
 
 for api in "${REQUIRED_APIS[@]}"; do
@@ -145,19 +183,20 @@ done
 log_ok "Required APIs enabled"
 
 # ─── Step 3: Terraform init ─────────────────────────────────────────────────
-log_step "Step 3/5: Initializing Terraform"
+log_step "Step 3/6: Initializing Terraform"
 
 cd "$SCRIPT_DIR"
 terraform init -input=false
 log_ok "Terraform initialized"
 
 # ─── Step 4: Terraform plan + apply ─────────────────────────────────────────
-log_step "Step 4/5: Planning and applying SA hierarchy"
+log_step "Step 4/6: Planning and applying SA hierarchy"
 
 # Write tfvars for this run
 cat > "$SCRIPT_DIR/bootstrap.auto.tfvars" <<EOF
-seed_project_id = "$SEED_PROJECT_ID"
-org_id          = "$ORG_ID"
+seed_project_id    = "$SEED_PROJECT_ID"
+org_id             = "$ORG_ID"
+billing_account_id = "$BILLING_ACCOUNT_ID"
 EOF
 log_info "Wrote bootstrap.auto.tfvars"
 
@@ -184,7 +223,7 @@ log_ok "Terraform apply complete — SA hierarchy created"
 rm -f bootstrap.tfplan
 
 # ─── Step 5: Disable the Installer SA ───────────────────────────────────────
-log_step "Step 5/5: Disabling Installer SA"
+log_step "Step 5/6: Disabling Installer SA"
 
 INSTALLER_SA_EMAIL=$(terraform output -raw installer_sa_email 2>/dev/null)
 
@@ -209,6 +248,57 @@ else
   log_info "To re-enable (emergency only): gcloud iam service-accounts enable $INSTALLER_SA_EMAIL"
 fi
 
+# ─── Step 6: Create seed VM ──────────────────────────────────────────────────
+if [[ "$SKIP_VM" == true ]]; then
+  log_warn "Skipping VM creation (--skip-vm flag set)."
+else
+  log_step "Step 6/6: Creating seed VM with Orchestrator SA"
+
+  ORCHESTRATOR_SA_EMAIL=$(terraform output -raw orchestrator_sa_email 2>/dev/null)
+
+  if [[ -z "$ORCHESTRATOR_SA_EMAIL" ]]; then
+    log_error "Could not retrieve Orchestrator SA email. Skipping VM creation."
+  else
+    # Check if VM already exists
+    if gcloud compute instances describe cloud-seed-vm \
+        --zone="$VM_ZONE" --project="$SEED_PROJECT_ID" &>/dev/null; then
+      log_warn "VM 'cloud-seed-vm' already exists in $VM_ZONE. Skipping creation."
+    else
+      log_info "Creating VM with SA: $ORCHESTRATOR_SA_EMAIL"
+
+      gcloud compute instances create cloud-seed-vm \
+        --project="$SEED_PROJECT_ID" \
+        --zone="$VM_ZONE" \
+        --machine-type="$VM_MACHINE_TYPE" \
+        --image-family=debian-12 \
+        --image-project=debian-cloud \
+        --boot-disk-size=30GB \
+        --service-account="$ORCHESTRATOR_SA_EMAIL" \
+        --scopes=cloud-platform \
+        --tags=cloud-seed \
+        --metadata-from-file=startup-script="$SCRIPT_DIR/vm-startup.sh" \
+        --quiet
+
+      log_ok "VM 'cloud-seed-vm' created in $VM_ZONE"
+      log_info "The VM is booting and running the startup script."
+      log_info "It will install Docker, clone the repo, and start docker-compose."
+      log_info "This takes ~5 minutes. Check progress with:"
+      log_info "  gcloud compute ssh cloud-seed-vm --zone=$VM_ZONE --project=$SEED_PROJECT_ID -- tail -f /var/log/cloud-seed-startup.log"
+    fi
+
+    # Ensure SSH firewall rule exists
+    if ! gcloud compute firewall-rules describe allow-ssh \
+        --project="$SEED_PROJECT_ID" &>/dev/null; then
+      gcloud compute firewall-rules create allow-ssh \
+        --project="$SEED_PROJECT_ID" \
+        --allow=tcp:22 \
+        --target-tags=cloud-seed \
+        --quiet
+      log_ok "Firewall rule 'allow-ssh' created"
+    fi
+  fi
+fi
+
 # ─── Summary ─────────────────────────────────────────────────────────────────
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -221,8 +311,9 @@ echo "    Orchestrator:         $(terraform output -raw orchestrator_sa_email 2>
 echo "    Ephemeral Pool Mgr:   $(terraform output -raw ephemeral_sa_pool_email 2>/dev/null)"
 echo ""
 echo "  Next steps:"
-echo "    1. Deploy the seed docker-compose stack"
-echo "    2. Configure client projects in variables.tf"
-echo "    3. Run: terraform apply  (to create per-project SAs)"
+echo "    1. Wait for VM startup (~5 min), then connect via SSH tunnel:"
+echo "       gcloud compute ssh cloud-seed-vm --zone=$VM_ZONE --project=$SEED_PROJECT_ID -- -L 8000:localhost:8000 -N"
+echo "    2. Configure Claude Desktop to connect to http://localhost:8000/mcp"
+echo "    3. Ask Claude to create your first project!"
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
