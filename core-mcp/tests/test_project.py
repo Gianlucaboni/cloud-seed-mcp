@@ -185,6 +185,92 @@ class TestProjectCreate:
 
 
 # ---------------------------------------------------------------------------
+# project_link_github
+# ---------------------------------------------------------------------------
+
+class TestProjectLinkGithub:
+    @pytest.mark.asyncio
+    async def test_creates_wif_provider(self, mcp_server, tmp_path):
+        """Verify project_link_github updates tfvars and runs terraform."""
+        projects_dir = tmp_path / "bootstrap" / "projects"
+        projects_dir.mkdir(parents=True)
+        bootstrap_dir = tmp_path / "bootstrap"
+
+        # Pre-populate tfvars with existing project (no github_repo)
+        tfvars_path = projects_dir / "projects.auto.tfvars.json"
+        import json as json_mod
+        tfvars_path.write_text(json_mod.dumps({
+            "seed_project_id": "my-seed",
+            "org_id": "123",
+            "wif_pool_name": "",
+            "client_projects": {
+                "my-project": {"project_id": "my-project", "github_repo": ""},
+            },
+        }))
+
+        ok = RunResult(0, "ok", "")
+        wif_output = RunResult(0, "projects/123/locations/global/workloadIdentityPools/pool", "")
+        providers_output = RunResult(
+            0,
+            json_mod.dumps({"my-project": "projects/123/locations/global/workloadIdentityPools/pool/providers/cs-my-project-github"}),
+            "",
+        )
+
+        call_log = []
+
+        async def mock_run(*args, cwd=None, timeout=None):
+            call_log.append((args, cwd))
+            if "terraform" in args and "output" in args and "wif_pool_name" in args:
+                return wif_output
+            if "terraform" in args and "output" in args and "wif_provider_names" in args:
+                return providers_output
+            return ok
+
+        settings_patch = {
+            "seed_project_id": "my-seed",
+            "org_id": "123",
+            "bootstrap_dir": str(bootstrap_dir),
+            "bootstrap_projects_dir": str(projects_dir),
+        }
+
+        with patch("core_mcp.tools.project.run_command", side_effect=mock_run), \
+             patch("core_mcp.tools.project.Settings", return_value=type("S", (), settings_patch)()):
+
+            fn = _get_tool_fn(mcp_server, "project_link_github")
+            result = await fn(
+                project_id="my-project",
+                github_repo="acme/my-project",
+            )
+
+        # Verify tfvars updated with github_repo
+        data = json_mod.loads(tfvars_path.read_text())
+        assert data["client_projects"]["my-project"]["github_repo"] == "acme/my-project"
+
+        # Verify output contains WIF info
+        assert "WIF provider created" in result
+        assert "acme/my-project" in result
+        assert "service_account_email" in result
+        assert "workload_identity_provider" in result
+
+    @pytest.mark.asyncio
+    async def test_fails_without_env_vars(self, mcp_server):
+        """Returns error when seed_project_id is not set."""
+        settings_patch = {
+            "seed_project_id": "",
+            "org_id": "",
+            "bootstrap_dir": "/tmp",
+            "bootstrap_projects_dir": "/tmp/projects",
+        }
+
+        with patch("core_mcp.tools.project.Settings", return_value=type("S", (), settings_patch)()):
+            fn = _get_tool_fn(mcp_server, "project_link_github")
+            result = await fn(project_id="x", github_repo="a/b")
+
+        assert "Error" in result
+        assert "CORE_MCP_SEED_PROJECT_ID" in result
+
+
+# ---------------------------------------------------------------------------
 # project_list
 # ---------------------------------------------------------------------------
 

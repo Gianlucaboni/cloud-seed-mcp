@@ -291,6 +291,131 @@ def register(mcp: FastMCP) -> None:
         return "\n".join(lines)
 
     @mcp.tool()
+    async def project_link_github(
+        project_id: str,
+        github_repo: str,
+    ) -> str:
+        """Link a GitHub repository to a GCP project for CI/CD via WIF.
+
+        Creates the Workload Identity Federation provider that allows
+        GitHub Actions in the specified repo to authenticate as the
+        project's Deploy SA (no SA keys needed). Also returns all the
+        values needed to configure the GitHub Actions deploy workflow.
+
+        This is a Yellow action.
+
+        Args:
+            project_id: GCP project identifier (must already exist via
+                        ``project_create``).
+            github_repo: GitHub repository in ``owner/repo`` format.
+        """
+        settings = Settings()
+        lines: list[str] = []
+
+        if not settings.seed_project_id or not settings.org_id:
+            return (
+                "Error: CORE_MCP_SEED_PROJECT_ID and CORE_MCP_ORG_ID must be set. "
+                "Cannot provision WIF without these."
+            )
+
+        projects_dir = settings.bootstrap_projects_dir
+        if not os.path.isdir(projects_dir):
+            return f"Error: projects directory '{projects_dir}' not found."
+
+        tfvars_path = os.path.join(projects_dir, "projects.auto.tfvars.json")
+
+        # Read WIF pool name from main bootstrap terraform output
+        wif_pool_name = ""
+        bootstrap_dir = settings.bootstrap_dir
+        wif_result = await run_command(
+            "terraform", "output", "-raw", "wif_pool_name",
+            "-no-color",
+            cwd=bootstrap_dir,
+        )
+        if wif_result.success and wif_result.stdout.strip():
+            wif_pool_name = wif_result.stdout.strip()
+
+        if not wif_pool_name:
+            return (
+                "Error: could not read wif_pool_name from bootstrap terraform output. "
+                "Is the bootstrap infrastructure deployed?"
+            )
+
+        # Update client project with github_repo
+        existing = _read_client_projects(tfvars_path)
+        if project_id not in existing:
+            existing[project_id] = {
+                "project_id": project_id,
+                "github_repo": github_repo,
+            }
+        else:
+            existing[project_id]["github_repo"] = github_repo
+
+        _write_projects_tfvars(
+            tfvars_path,
+            settings.seed_project_id,
+            settings.org_id,
+            wif_pool_name,
+            existing,
+        )
+        lines.append(f"Updated projects.auto.tfvars.json: {project_id} → {github_repo}")
+
+        # terraform init + apply
+        init_result = await run_command(
+            "terraform", "init", "-input=false", "-no-color",
+            cwd=projects_dir,
+        )
+        if not init_result.success:
+            return f"Error: terraform init failed — {init_result.stderr}"
+
+        apply_result = await run_command(
+            "terraform", "apply",
+            "-input=false", "-no-color", "-auto-approve",
+            cwd=projects_dir,
+            timeout=300.0,
+        )
+        if not apply_result.success:
+            return (
+                f"Error: terraform apply failed.\n"
+                f"stderr: {apply_result.stderr[:500]}"
+            )
+
+        lines.append("WIF provider created successfully.")
+
+        # Read terraform outputs for the deploy workflow values
+        sa_prefix = f"cs-{project_id[:16]}"
+        deploy_sa = f"{sa_prefix}-deploy@{settings.seed_project_id}.iam.gserviceaccount.com"
+
+        # Get the WIF provider name from terraform output
+        output_result = await run_command(
+            "terraform", "output", "-json", "wif_provider_names",
+            "-no-color",
+            cwd=projects_dir,
+        )
+        wif_provider = ""
+        if output_result.success:
+            try:
+                providers = json.loads(output_result.stdout)
+                wif_provider = providers.get(project_id, "")
+            except (json.JSONDecodeError, ValueError):
+                pass
+
+        lines.append("")
+        lines.append("GitHub Actions deploy workflow configuration:")
+        lines.append(f"  project_id: {project_id}")
+        lines.append(f"  service_account_email: {deploy_sa}")
+        lines.append(f"  workload_identity_provider: {wif_provider}")
+        lines.append(f"  github_repo: {github_repo}")
+        lines.append(f"  wif_pool: {wif_pool_name}")
+        lines.append("")
+        lines.append(
+            "Use these values in the GitHub Actions workflow "
+            "(deploy.yml) for WIF authentication."
+        )
+
+        return "\n".join(lines)
+
+    @mcp.tool()
     async def project_list(org_only: bool = True) -> str:
         """List GCP projects.
 
