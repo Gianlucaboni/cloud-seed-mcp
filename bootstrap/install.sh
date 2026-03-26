@@ -142,12 +142,20 @@ if [[ -z "$CURRENT_ACCOUNT" ]]; then
 fi
 log_ok "Authenticated as: $CURRENT_ACCOUNT"
 
-# Check project exists and is accessible
+# Create project if it doesn't exist, otherwise verify access
 if ! gcloud projects describe "$SEED_PROJECT_ID" &> /dev/null; then
-  log_error "Cannot access project '$SEED_PROJECT_ID'. Verify it exists and you have access."
-  exit 1
+  log_info "Project '$SEED_PROJECT_ID' not found — creating it..."
+  if ! gcloud projects create "$SEED_PROJECT_ID" \
+      --name="Cloud Seed ${SEED_PROJECT_ID}" \
+      --organization="$ORG_ID" \
+      --quiet; then
+    log_error "Failed to create project '$SEED_PROJECT_ID'."
+    exit 1
+  fi
+  log_ok "Seed project created: $SEED_PROJECT_ID"
+else
+  log_ok "Seed project accessible: $SEED_PROJECT_ID"
 fi
-log_ok "Seed project accessible: $SEED_PROJECT_ID"
 
 # Check organization access
 if ! gcloud organizations describe "$ORG_ID" &> /dev/null; then
@@ -276,6 +284,14 @@ if [[ -z "$BILLING_ACCOUNT_ID" ]]; then
   else
     log_warn "No billing account found. Project creation and API enablement may fail."
   fi
+fi
+
+# Link billing to seed project (required before enabling most APIs)
+if [[ -n "$BILLING_ACCOUNT_ID" ]]; then
+  gcloud billing projects link "$SEED_PROJECT_ID" \
+    --billing-account="$BILLING_ACCOUNT_ID" --quiet 2>/dev/null && \
+    log_ok "Billing account linked to seed project" || \
+    log_warn "Could not link billing (may already be linked)"
 fi
 
 REQUIRED_APIS=(
