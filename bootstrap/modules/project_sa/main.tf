@@ -98,10 +98,19 @@ resource "google_project_iam_member" "deploy_build_viewer" {
 }
 
 # Deploy SA: act as the Runtime SA when deploying Cloud Run services
+# SA-level binding (targeted: only this specific Runtime SA)
 resource "google_service_account_iam_member" "deploy_acts_as_runtime" {
   service_account_id = google_service_account.runtime.name
   role               = "roles/iam.serviceAccountUser"
   member             = "serviceAccount:${google_service_account.deploy.email}"
+}
+
+# Deploy SA: project-level serviceAccountUser on client project
+# Required for Cloud Run to accept cross-project SA as service identity
+resource "google_project_iam_member" "deploy_sa_user" {
+  project = var.project_id
+  role    = "roles/iam.serviceAccountUser"
+  member  = "serviceAccount:${google_service_account.deploy.email}"
 }
 
 # Deploy SA: additional roles (if any)
