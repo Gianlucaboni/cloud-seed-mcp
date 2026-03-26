@@ -51,6 +51,14 @@ resource "google_project_iam_member" "orchestrator_client_service_usage" {
   member  = "serviceAccount:${local.orchestrator_email}"
 }
 
+resource "google_project_iam_member" "orchestrator_client_ar_admin" {
+  for_each = var.client_projects
+
+  project = each.value.project_id
+  role    = "roles/artifactregistry.admin"
+  member  = "serviceAccount:${local.orchestrator_email}"
+}
+
 # ─── Per-project SAs ─────────────────────────────────────────────────────────
 
 module "project_sa" {
