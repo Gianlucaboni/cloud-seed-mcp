@@ -23,6 +23,9 @@ from core_mcp.tools._subprocess import run_command
 # The WIF pool ID is a fixed constant — always created by bootstrap.
 _WIF_POOL_ID = "cloudseed-github-pool"
 
+# Default Artifact Registry repo name — one per project, shared by all images.
+_AR_REPO_NAME = "cloud-seed-images"
+
 
 def _build_wif_pool_name(project_number: str) -> str:
     """Construct the full WIF pool resource name from the seed project number."""
@@ -200,6 +203,21 @@ def register(mcp: FastMCP) -> None:
             lines.append(f"Enabled {len(_DEFAULT_APIS)} APIs.")
         else:
             lines.append(f"Warning: some APIs may not have been enabled — {enable_result.stderr}")
+
+        # ── 3b. Create Artifact Registry repository ─────────────────
+        ar_result = await run_command(
+            "gcloud", "artifacts", "repositories", "create", _AR_REPO_NAME,
+            "--repository-format=docker",
+            "--location=europe-west1",
+            f"--project={project_id}",
+            "--quiet",
+        )
+        if ar_result.success:
+            lines.append(f"Artifact Registry repo '{_AR_REPO_NAME}' created.")
+        elif "already exists" in ar_result.stderr.lower():
+            lines.append(f"Artifact Registry repo '{_AR_REPO_NAME}' already exists.")
+        else:
+            lines.append(f"Warning: could not create AR repo — {ar_result.stderr}")
 
         # ── 4. Prepare Terraform directory ───────────────────────────
         tf_dir = os.path.join(tf_base_dir, project_id)
