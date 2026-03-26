@@ -83,10 +83,10 @@ resource "google_project_iam_member" "deploy_run_admin" {
   member  = "serviceAccount:${google_service_account.deploy.email}"
 }
 
-# Deploy SA: push container images to Artifact Registry
-resource "google_project_iam_member" "deploy_artifact_writer" {
+# Deploy SA: create repos and push container images to Artifact Registry
+resource "google_project_iam_member" "deploy_artifact_admin" {
   project = var.project_id
-  role    = "roles/artifactregistry.writer"
+  role    = "roles/artifactregistry.admin"
   member  = "serviceAccount:${google_service_account.deploy.email}"
 }
 
