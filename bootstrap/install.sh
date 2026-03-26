@@ -38,6 +38,8 @@ VM_MACHINE_TYPE="e2-medium"
 AUTO_APPROVE=false
 SKIP_DISABLE=false
 SKIP_VM=false
+CLEAN=false
+GITHUB_OWNER=""
 
 usage() {
   cat <<EOF
@@ -51,13 +53,16 @@ Options:
   --billing-account=ID   Billing account ID to link (auto-detected if omitted)
   --vm-zone=ZONE         GCP zone for the seed VM (default: europe-west1-b)
   --vm-machine-type=TYPE Machine type for the VM (default: e2-medium)
+  --github-owner=OWNER   GitHub account/org allowed to deploy via WIF (e.g. Gianlucaboni)
   --auto-approve         Skip terraform apply confirmation prompt
   --skip-disable         Do not disable the Installer SA (for development only)
   --skip-vm              Do not create the seed VM (SA hierarchy only)
+  --clean                Delete existing Cloud Seed resources before bootstrap (safe re-run)
   --help                 Show this help message
 
 Example:
-  $0 --seed-project-id=my-cloud-seed --org-id=123456789012
+  $0 --seed-project-id=my-cloud-seed --org-id=123456789012 --github-owner=MyGitHubOrg
+  $0 --seed-project-id=my-cloud-seed --org-id=123456789012 --github-owner=MyGitHubOrg --clean
 EOF
   exit 1
 }
@@ -87,6 +92,12 @@ for arg in "$@"; do
       ;;
     --skip-vm)
       SKIP_VM=true
+      ;;
+    --github-owner=*)
+      GITHUB_OWNER="${arg#*=}"
+      ;;
+    --clean)
+      CLEAN=true
       ;;
     --help|-h)
       usage
@@ -141,6 +152,117 @@ log_ok "Seed project accessible: $SEED_PROJECT_ID"
 # Check organization access
 if ! gcloud organizations describe "$ORG_ID" &> /dev/null; then
   log_warn "Cannot verify organization '$ORG_ID'. Proceeding, but deny policies may fail without org access."
+fi
+
+# ─── Step 1b: Clean org-level deny policies (optional) ──────────────────────
+if [[ "$CLEAN" == true ]]; then
+  log_step "Step 1b/7: Cleaning previous Cloud Seed state"
+
+  # 1. Remove local Terraform state (leftover from a previous bootstrap run)
+  for f in "$SCRIPT_DIR/terraform.tfstate" "$SCRIPT_DIR/terraform.tfstate.backup" "$SCRIPT_DIR/bootstrap.auto.tfvars"; do
+    if [[ -f "$f" ]]; then
+      rm -f "$f"
+      log_ok "Removed: $f"
+    fi
+  done
+
+  # 2. Delete GCP project-level resources (may exist from a previous partial run)
+  log_info "Cleaning Cloud Seed GCP resources in project '$SEED_PROJECT_ID'..."
+
+  # Service accounts
+  for sa in cloudseed-installer cloudseed-orchestrator cloudseed-ephemeral-mgr cloudseed-sa-cleanup; do
+    if gcloud iam service-accounts describe "${sa}@${SEED_PROJECT_ID}.iam.gserviceaccount.com" \
+        --project="$SEED_PROJECT_ID" &>/dev/null; then
+      gcloud iam service-accounts delete "${sa}@${SEED_PROJECT_ID}.iam.gserviceaccount.com" \
+        --project="$SEED_PROJECT_ID" --quiet && log_ok "Deleted SA: $sa" || \
+        log_warn "Could not delete SA: $sa"
+    fi
+  done
+
+  # WIF pool — gcloud soft-deletes with 30-day retention, so we undelete it
+  # instead and let terraform import it into state later.
+  gcloud iam workload-identity-pools undelete cloudseed-github-pool \
+    --location=global --project="$SEED_PROJECT_ID" --quiet &>/dev/null && \
+    log_ok "Undeleted WIF pool: cloudseed-github-pool (was soft-deleted)" || true
+  WIF_POOL_EXISTS=false
+  if gcloud iam workload-identity-pools describe cloudseed-github-pool \
+      --location=global --project="$SEED_PROJECT_ID" \
+      --format="value(state)" 2>/dev/null | grep -qi "ACTIVE"; then
+    WIF_POOL_EXISTS=true
+    log_info "WIF pool exists and is active — will be imported into terraform state."
+  fi
+
+  # Custom IAM roles
+  for role in cloudSeedOrchestratorOps cloudSeedEphemeralReadOnly; do
+    if gcloud iam roles describe "$role" --project="$SEED_PROJECT_ID" &>/dev/null; then
+      gcloud iam roles delete "$role" --project="$SEED_PROJECT_ID" --quiet && \
+        log_ok "Deleted role: $role" || log_warn "Could not delete role: $role"
+    fi
+  done
+
+  # Pub/Sub topic
+  if gcloud pubsub topics describe cloudseed-ephemeral-sa-cleanup \
+      --project="$SEED_PROJECT_ID" &>/dev/null; then
+    gcloud pubsub topics delete cloudseed-ephemeral-sa-cleanup \
+      --project="$SEED_PROJECT_ID" --quiet && \
+      log_ok "Deleted Pub/Sub topic: cloudseed-ephemeral-sa-cleanup" || \
+      log_warn "Could not delete Pub/Sub topic"
+  fi
+
+  # Cloud Scheduler job
+  if gcloud scheduler jobs describe cloudseed-ephemeral-sa-cleanup \
+      --location="$VM_ZONE" --project="$SEED_PROJECT_ID" &>/dev/null 2>&1 || \
+     gcloud scheduler jobs describe cloudseed-ephemeral-sa-cleanup \
+      --location="${VM_ZONE%-*}" --project="$SEED_PROJECT_ID" &>/dev/null 2>&1; then
+    gcloud scheduler jobs delete cloudseed-ephemeral-sa-cleanup \
+      --location="${VM_ZONE%-*}" --project="$SEED_PROJECT_ID" --quiet 2>/dev/null || \
+      gcloud scheduler jobs delete cloudseed-ephemeral-sa-cleanup \
+        --location="$VM_ZONE" --project="$SEED_PROJECT_ID" --quiet 2>/dev/null || \
+      log_warn "Could not delete Scheduler job"
+    log_ok "Deleted Scheduler job: cloudseed-ephemeral-sa-cleanup"
+  fi
+
+  # 3. Delete deny policies (both project-level and org-level)
+  # Uses IAM v2 REST API directly — gcloud CLI does not support denyPolicies kind.
+  IAM_V2_BASE="https://iam.googleapis.com/v2/policies"
+  ACCESS_TOKEN=$(gcloud auth print-access-token)
+
+  # Project-level deny policies
+  PROJECT_ENCODED="cloudresourcemanager.googleapis.com%2Fprojects%2F${SEED_PROJECT_ID}"
+  for policy in "cloudseed-deny-modify-critical-sas" "cloudseed-deny-seed-iam-modification"; do
+    log_info "Deleting project-level deny policy: $policy"
+    HTTP_CODE=$(curl -s -o /tmp/deny_policy_delete.json -w "%{http_code}" -X DELETE \
+      -H "Authorization: Bearer ${ACCESS_TOKEN}" \
+      "${IAM_V2_BASE}/${PROJECT_ENCODED}/denypolicies/${policy}")
+
+    if [[ "$HTTP_CODE" == "200" ]]; then
+      log_ok "Deleted: $policy"
+    elif [[ "$HTTP_CODE" == "404" ]]; then
+      log_warn "Policy '$policy' not found — skipping."
+    else
+      log_error "Failed to delete '$policy' (HTTP $HTTP_CODE): $(cat /tmp/deny_policy_delete.json)"
+      exit 1
+    fi
+  done
+
+  # Org-level deny policies
+  ORG_ENCODED="cloudresourcemanager.googleapis.com%2Forganizations%2F${ORG_ID}"
+  for policy in "cloudseed-deny-project-deletion" "cloudseed-deny-cross-project-secrets"; do
+    log_info "Deleting org-level deny policy: $policy"
+    HTTP_CODE=$(curl -s -o /tmp/deny_policy_delete.json -w "%{http_code}" -X DELETE \
+      -H "Authorization: Bearer ${ACCESS_TOKEN}" \
+      "${IAM_V2_BASE}/${ORG_ENCODED}/denypolicies/${policy}")
+
+    if [[ "$HTTP_CODE" == "200" ]]; then
+      log_ok "Deleted: $policy"
+    elif [[ "$HTTP_CODE" == "404" ]]; then
+      log_warn "Policy '$policy' not found — skipping."
+    else
+      log_error "Failed to delete '$policy' (HTTP $HTTP_CODE): $(cat /tmp/deny_policy_delete.json)"
+      exit 1
+    fi
+  done
+  rm -f /tmp/deny_policy_delete.json
 fi
 
 # ─── Step 2: Enable required APIs ───────────────────────────────────────────
@@ -199,6 +321,19 @@ log_step "Step 3/7: Initializing Terraform"
 cd "$SCRIPT_DIR"
 terraform init -input=false
 log_ok "Terraform initialized"
+
+# Import WIF pool if it survived from a previous run (soft-delete retention)
+if [[ "$CLEAN" == true ]] && [[ "$WIF_POOL_EXISTS" == true ]]; then
+  log_info "Importing existing WIF pool into terraform state..."
+  terraform import \
+    -var="seed_project_id=$SEED_PROJECT_ID" \
+    -var="org_id=$ORG_ID" \
+    google_iam_workload_identity_pool.github \
+    "projects/$SEED_PROJECT_ID/locations/global/workloadIdentityPools/cloudseed-github-pool" \
+    2>/dev/null && \
+    log_ok "WIF pool imported into state" || \
+    log_warn "WIF pool import skipped (may already be in state)"
+fi
 
 # ─── Step 4: Terraform plan + apply ─────────────────────────────────────────
 log_step "Step 4/7: Planning and applying SA hierarchy"
@@ -310,6 +445,7 @@ else
         --scopes=cloud-platform \
         --tags=cloud-seed \
         --metadata-from-file=startup-script="$SCRIPT_DIR/vm-startup.sh" \
+        ${GITHUB_OWNER:+--metadata=github-owner="$GITHUB_OWNER"} \
         --quiet
 
       log_ok "VM 'cloud-seed-vm' created in $VM_ZONE"

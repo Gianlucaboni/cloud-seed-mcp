@@ -62,6 +62,8 @@ fi
 echo "Creating .env with auto-detected GCP context..."
 SEED_PROJECT_ID=$(curl -s -H "Metadata-Flavor: Google" \
     "http://metadata.google.internal/computeMetadata/v1/project/project-id" 2>/dev/null || echo "")
+SEED_PROJECT_NUMBER=$(curl -s -H "Metadata-Flavor: Google" \
+    "http://metadata.google.internal/computeMetadata/v1/project/numeric-project-id" 2>/dev/null || echo "")
 ORG_ID=$(gcloud projects describe "$SEED_PROJECT_ID" \
     --format="value(parent.id)" 2>/dev/null || echo "")
 
@@ -72,9 +74,21 @@ if [ -n "$SEED_PROJECT_ID" ]; then
     sed -i "s|^CORE_MCP_SEED_PROJECT_ID=.*|CORE_MCP_SEED_PROJECT_ID=${SEED_PROJECT_ID}|" .env
     echo "Detected seed project: $SEED_PROJECT_ID"
 fi
+if [ -n "$SEED_PROJECT_NUMBER" ]; then
+    sed -i "s|^CORE_MCP_SEED_PROJECT_NUMBER=.*|CORE_MCP_SEED_PROJECT_NUMBER=${SEED_PROJECT_NUMBER}|" .env
+    echo "Detected seed project number: $SEED_PROJECT_NUMBER"
+fi
 if [ -n "$ORG_ID" ]; then
     sed -i "s|^CORE_MCP_ORG_ID=.*|CORE_MCP_ORG_ID=${ORG_ID}|" .env
     echo "Detected org ID: $ORG_ID"
+fi
+
+# Inject GITHUB_OWNER from VM metadata (set via --metadata at VM creation)
+GITHUB_OWNER=$(curl -s -H "Metadata-Flavor: Google" \
+    "http://metadata.google.internal/computeMetadata/v1/instance/attributes/github-owner" 2>/dev/null || echo "")
+if [ -n "$GITHUB_OWNER" ]; then
+    sed -i "s|^CORE_MCP_GITHUB_OWNER=.*|CORE_MCP_GITHUB_OWNER=${GITHUB_OWNER}|" .env
+    echo "Detected GitHub owner: $GITHUB_OWNER"
 fi
 
 # ─── Export HOME for docker-compose volume mount ─────────────────────────────

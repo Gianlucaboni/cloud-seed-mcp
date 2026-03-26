@@ -11,6 +11,8 @@ class Settings(BaseSettings):
     bootstrap_dir: str = "/app/bootstrap"
     bootstrap_projects_dir: str = "/app/bootstrap/projects"
     seed_project_id: str = ""
+    seed_project_number: str = ""
     org_id: str = ""
+    github_owner: str = ""
 
     model_config = {"env_prefix": "CORE_MCP_"}

@@ -46,10 +46,18 @@ variable "data_additional_roles" {
   default     = []
 }
 
-variable "github_repo" {
-  description = "GitHub repository (owner/repo) for WIF CI/CD binding. Empty string means no WIF setup."
-  type        = string
-  default     = ""
+variable "github_access" {
+  description = "List of GitHub identities allowed to deploy via WIF. Each entry creates a separate WIF provider. type='owner' allows all repos from an account/org, type='repo' restricts to a single repo (owner/repo format)."
+  type = list(object({
+    type  = string
+    value = string
+  }))
+  default = []
+
+  validation {
+    condition     = alltrue([for a in var.github_access : contains(["owner", "repo"], a.type)])
+    error_message = "Each github_access entry must have type 'owner' or 'repo'."
+  }
 }
 
 variable "wif_pool_name" {

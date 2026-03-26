@@ -23,7 +23,7 @@ module "project_sa" {
   seed_project_id = var.seed_project_id
   labels          = var.seed_labels
 
-  github_repo   = each.value.github_repo
+  github_access = each.value.github_access
   wif_pool_name = var.wif_pool_name
   wif_pool_id   = var.wif_pool_id
 }

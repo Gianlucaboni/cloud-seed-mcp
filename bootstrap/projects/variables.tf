@@ -32,7 +32,7 @@ variable "default_region" {
 }
 
 variable "wif_pool_name" {
-  description = "Full resource name of the GitHub WIF pool (from bootstrap infra output)"
+  description = "Full resource name of the GitHub WIF pool (constructed from seed project number)"
   type        = string
   default     = ""
 }
@@ -44,10 +44,13 @@ variable "wif_pool_id" {
 }
 
 variable "client_projects" {
-  description = "Map of client project configurations. Key is a short name, value contains the project ID and optional github_repo."
+  description = "Map of client project configurations. Key is a short name, value contains the project ID and a list of GitHub identities allowed to deploy."
   type = map(object({
-    project_id  = string
-    github_repo = optional(string, "")
+    project_id    = string
+    github_access = optional(list(object({
+      type  = string
+      value = string
+    })), [])
   }))
   default = {}
 }

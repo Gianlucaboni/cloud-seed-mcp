@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import os
-import textwrap
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -30,6 +29,20 @@ def _get_tool_fn(mcp_server: FastMCP, name: str):
 
 
 # ---------------------------------------------------------------------------
+# _build_wif_pool_name
+# ---------------------------------------------------------------------------
+
+class TestBuildWifPoolName:
+    def test_constructs_from_project_number(self):
+        result = project._build_wif_pool_name("123456789")
+        assert result == "projects/123456789/locations/global/workloadIdentityPools/cloudseed-github-pool"
+
+    def test_uses_constant_pool_id(self):
+        result = project._build_wif_pool_name("999")
+        assert "cloudseed-github-pool" in result
+
+
+# ---------------------------------------------------------------------------
 # _read_client_projects / _write_projects_tfvars
 # ---------------------------------------------------------------------------
 
@@ -39,7 +52,10 @@ class TestTfvarsRoundTrip:
         projects = {
             "solar-fox": {
                 "project_id": "solar-fox-lab-2026",
-                "github_repo": "acme/solar-fox",
+                "github_access": [
+                    {"type": "owner", "value": "Gianlucaboni"},
+                    {"type": "repo", "value": "acme/solar-fox"},
+                ],
             }
         }
 
@@ -47,7 +63,7 @@ class TestTfvarsRoundTrip:
             tfvars_path,
             seed_project_id="pa-cloud-seed",
             org_id="95628101394",
-            wif_pool_name="projects/123/locations/global/workloadIdentityPools/pool",
+            wif_pool_name="projects/123/locations/global/workloadIdentityPools/cloudseed-github-pool",
             client_projects=projects,
         )
 
@@ -55,14 +71,16 @@ class TestTfvarsRoundTrip:
         data = json.loads(open(tfvars_path).read())
         assert data["seed_project_id"] == "pa-cloud-seed"
         assert data["org_id"] == "95628101394"
-        assert data["wif_pool_name"] == "projects/123/locations/global/workloadIdentityPools/pool"
+        assert data["wif_pool_name"] == "projects/123/locations/global/workloadIdentityPools/cloudseed-github-pool"
         assert "solar-fox" in data["client_projects"]
+        assert len(data["client_projects"]["solar-fox"]["github_access"]) == 2
 
         # Read back via helper
         parsed = project._read_client_projects(tfvars_path)
         assert "solar-fox" in parsed
         assert parsed["solar-fox"]["project_id"] == "solar-fox-lab-2026"
-        assert parsed["solar-fox"]["github_repo"] == "acme/solar-fox"
+        assert parsed["solar-fox"]["github_access"][0]["type"] == "owner"
+        assert parsed["solar-fox"]["github_access"][0]["value"] == "Gianlucaboni"
 
     def test_write_empty_projects(self, tmp_path):
         tfvars_path = str(tmp_path / "projects.auto.tfvars.json")
@@ -95,11 +113,6 @@ class TestProjectCreate:
 
         ok = RunResult(0, "ok", "")
         billing_result = RunResult(0, "010DD5-DAB31A-97E66E", "")
-        wif_output = RunResult(
-            0,
-            "projects/123/locations/global/workloadIdentityPools/cloudseed-github-pool",
-            "",
-        )
 
         call_log = []
 
@@ -108,14 +121,13 @@ class TestProjectCreate:
             # billing list
             if "billing" in args and "list" in args:
                 return billing_result
-            # terraform output for wif
-            if "terraform" in args and "output" in args:
-                return wif_output
             return ok
 
         settings_patch = {
             "seed_project_id": "pa-cloud-seed",
+            "seed_project_number": "123456789",
             "org_id": "95628101394",
+            "github_owner": "Gianlucaboni",
             "bootstrap_dir": str(bootstrap_dir),
             "bootstrap_projects_dir": str(projects_dir),
         }
@@ -132,16 +144,18 @@ class TestProjectCreate:
         # The tfvars should be in projects_dir, not bootstrap_dir
         tfvars = projects_dir / "projects.auto.tfvars.json"
         assert tfvars.exists(), "projects.auto.tfvars.json should be in bootstrap/projects/"
-        content = tfvars.read_text()
-        assert "test-proj-2026" in content
-        assert "wif_pool_name" in content
+        content = json.loads(tfvars.read_text())
+        assert "test-proj-2026" in content["client_projects"]
+        assert content["wif_pool_name"] == "projects/123456789/locations/global/workloadIdentityPools/cloudseed-github-pool"
+
+        # Verify github_access has the default owner
+        proj_data = content["client_projects"]["test-proj-2026"]
+        assert proj_data["github_access"] == [{"type": "owner", "value": "Gianlucaboni"}]
 
         # No bootstrap.auto.tfvars should exist in the main bootstrap dir
         assert not (bootstrap_dir / "bootstrap.auto.tfvars").exists()
 
         # terraform init and apply should run in projects_dir
-        tf_cwds = [cwd for (args, cwd) in call_log if args and args[0] == "terraform" and cwd is not None]
-        # Filter to init/apply calls (not the output call which runs in bootstrap_dir)
         init_apply_cwds = [
             cwd for (args, cwd) in call_log
             if args and args[0] == "terraform" and ("init" in args or "apply" in args)
@@ -166,7 +180,9 @@ class TestProjectCreate:
 
         settings_patch = {
             "seed_project_id": "",
+            "seed_project_number": "",
             "org_id": "",
+            "github_owner": "",
             "bootstrap_dir": str(tmp_path),
             "bootstrap_projects_dir": str(tmp_path / "projects"),
         }
@@ -183,91 +199,380 @@ class TestProjectCreate:
         assert "CORE_MCP_SEED_PROJECT_ID" in result
         assert "Skipping SA hierarchy" in result
 
-
-# ---------------------------------------------------------------------------
-# project_link_github
-# ---------------------------------------------------------------------------
-
-class TestProjectLinkGithub:
     @pytest.mark.asyncio
-    async def test_creates_wif_provider(self, mcp_server, tmp_path):
-        """Verify project_link_github updates tfvars and runs terraform."""
+    async def test_create_without_github_owner(self, mcp_server, tmp_path):
+        """When no github_owner is set, github_access should be empty."""
         projects_dir = tmp_path / "bootstrap" / "projects"
         projects_dir.mkdir(parents=True)
-        bootstrap_dir = tmp_path / "bootstrap"
-
-        # Pre-populate tfvars with existing project (no github_repo)
-        tfvars_path = projects_dir / "projects.auto.tfvars.json"
-        import json as json_mod
-        tfvars_path.write_text(json_mod.dumps({
-            "seed_project_id": "my-seed",
-            "org_id": "123",
-            "wif_pool_name": "",
-            "client_projects": {
-                "my-project": {"project_id": "my-project", "github_repo": ""},
-            },
-        }))
 
         ok = RunResult(0, "ok", "")
-        wif_output = RunResult(0, "projects/123/locations/global/workloadIdentityPools/pool", "")
-        providers_output = RunResult(
-            0,
-            json_mod.dumps({"my-project": "projects/123/locations/global/workloadIdentityPools/pool/providers/cs-my-project-github"}),
-            "",
-        )
-
-        call_log = []
+        billing_result = RunResult(0, "BILLING-123", "")
 
         async def mock_run(*args, cwd=None, timeout=None):
-            call_log.append((args, cwd))
-            if "terraform" in args and "output" in args and "wif_pool_name" in args:
-                return wif_output
-            if "terraform" in args and "output" in args and "wif_provider_names" in args:
-                return providers_output
+            if "billing" in args and "list" in args:
+                return billing_result
             return ok
 
         settings_patch = {
             "seed_project_id": "my-seed",
+            "seed_project_number": "999",
             "org_id": "123",
-            "bootstrap_dir": str(bootstrap_dir),
+            "github_owner": "",
+            "bootstrap_dir": str(tmp_path / "bootstrap"),
             "bootstrap_projects_dir": str(projects_dir),
         }
 
         with patch("core_mcp.tools.project.run_command", side_effect=mock_run), \
              patch("core_mcp.tools.project.Settings", return_value=type("S", (), settings_patch)()):
 
-            fn = _get_tool_fn(mcp_server, "project_link_github")
-            result = await fn(
-                project_id="my-project",
-                github_repo="acme/my-project",
+            fn = _get_tool_fn(mcp_server, "project_create")
+            await fn(
+                project_id="no-wif-proj",
+                tf_base_dir=str(tmp_path / "projects"),
             )
 
-        # Verify tfvars updated with github_repo
-        data = json_mod.loads(tfvars_path.read_text())
-        assert data["client_projects"]["my-project"]["github_repo"] == "acme/my-project"
+        tfvars = projects_dir / "projects.auto.tfvars.json"
+        content = json.loads(tfvars.read_text())
+        assert content["client_projects"]["no-wif-proj"]["github_access"] == []
 
-        # Verify output contains WIF info
-        assert "WIF provider created" in result
-        assert "acme/my-project" in result
-        assert "service_account_email" in result
-        assert "workload_identity_provider" in result
+
+# ---------------------------------------------------------------------------
+# project_add_wif
+# ---------------------------------------------------------------------------
+
+class TestProjectAddWif:
+    @pytest.mark.asyncio
+    async def test_adds_wif_entry(self, mcp_server, tmp_path):
+        """Verify project_add_wif adds a github_access entry and runs terraform."""
+        projects_dir = tmp_path / "bootstrap" / "projects"
+        projects_dir.mkdir(parents=True)
+
+        # Pre-populate tfvars with existing project (no github_access)
+        tfvars_path = projects_dir / "projects.auto.tfvars.json"
+        tfvars_path.write_text(json.dumps({
+            "seed_project_id": "my-seed",
+            "org_id": "123",
+            "wif_pool_name": "",
+            "client_projects": {
+                "my-project": {"project_id": "my-project", "github_access": []},
+            },
+        }))
+
+        ok = RunResult(0, "ok", "")
+        call_log = []
+
+        async def mock_run(*args, cwd=None, timeout=None):
+            call_log.append((args, cwd))
+            return ok
+
+        settings_patch = {
+            "seed_project_id": "my-seed",
+            "seed_project_number": "123456",
+            "org_id": "123",
+            "github_owner": "",
+            "bootstrap_dir": str(tmp_path / "bootstrap"),
+            "bootstrap_projects_dir": str(projects_dir),
+        }
+
+        with patch("core_mcp.tools.project.run_command", side_effect=mock_run), \
+             patch("core_mcp.tools.project.Settings", return_value=type("S", (), settings_patch)()):
+
+            fn = _get_tool_fn(mcp_server, "project_add_wif")
+            result = await fn(
+                project_id="my-project",
+                access_type="owner",
+                access_value="Gianlucaboni",
+            )
+
+        # Verify tfvars updated with github_access
+        data = json.loads(tfvars_path.read_text())
+        access = data["client_projects"]["my-project"]["github_access"]
+        assert len(access) == 1
+        assert access[0] == {"type": "owner", "value": "Gianlucaboni"}
+
+        # Verify wif_pool_name was constructed from project number
+        assert data["wif_pool_name"] == "projects/123456/locations/global/workloadIdentityPools/cloudseed-github-pool"
+
+        # Verify output
+        assert "WIF access added" in result
+        assert "Gianlucaboni" in result
 
     @pytest.mark.asyncio
-    async def test_fails_without_env_vars(self, mcp_server):
-        """Returns error when seed_project_id is not set."""
+    async def test_adds_multiple_entries(self, mcp_server, tmp_path):
+        """Can add multiple WIF entries to the same project."""
+        projects_dir = tmp_path / "bootstrap" / "projects"
+        projects_dir.mkdir(parents=True)
+
+        tfvars_path = projects_dir / "projects.auto.tfvars.json"
+        tfvars_path.write_text(json.dumps({
+            "seed_project_id": "my-seed",
+            "org_id": "123",
+            "wif_pool_name": "",
+            "client_projects": {
+                "my-project": {
+                    "project_id": "my-project",
+                    "github_access": [{"type": "owner", "value": "Gianlucaboni"}],
+                },
+            },
+        }))
+
+        ok = RunResult(0, "ok", "")
+
+        async def mock_run(*args, cwd=None, timeout=None):
+            return ok
+
         settings_patch = {
-            "seed_project_id": "",
-            "org_id": "",
+            "seed_project_id": "my-seed",
+            "seed_project_number": "123456",
+            "org_id": "123",
+            "github_owner": "",
+            "bootstrap_dir": str(tmp_path / "bootstrap"),
+            "bootstrap_projects_dir": str(projects_dir),
+        }
+
+        with patch("core_mcp.tools.project.run_command", side_effect=mock_run), \
+             patch("core_mcp.tools.project.Settings", return_value=type("S", (), settings_patch)()):
+
+            fn = _get_tool_fn(mcp_server, "project_add_wif")
+            result = await fn(
+                project_id="my-project",
+                access_type="repo",
+                access_value="AltroUser/specific-repo",
+            )
+
+        data = json.loads(tfvars_path.read_text())
+        access = data["client_projects"]["my-project"]["github_access"]
+        assert len(access) == 2
+        assert access[0] == {"type": "owner", "value": "Gianlucaboni"}
+        assert access[1] == {"type": "repo", "value": "AltroUser/specific-repo"}
+        assert "2 entries" in result
+
+    @pytest.mark.asyncio
+    async def test_rejects_duplicate(self, mcp_server, tmp_path):
+        """Duplicate entries are rejected without running terraform."""
+        projects_dir = tmp_path / "bootstrap" / "projects"
+        projects_dir.mkdir(parents=True)
+
+        tfvars_path = projects_dir / "projects.auto.tfvars.json"
+        tfvars_path.write_text(json.dumps({
+            "seed_project_id": "my-seed",
+            "org_id": "123",
+            "wif_pool_name": "",
+            "client_projects": {
+                "my-project": {
+                    "project_id": "my-project",
+                    "github_access": [{"type": "owner", "value": "Gianlucaboni"}],
+                },
+            },
+        }))
+
+        settings_patch = {
+            "seed_project_id": "my-seed",
+            "seed_project_number": "123456",
+            "org_id": "123",
+            "github_owner": "",
+            "bootstrap_dir": str(tmp_path / "bootstrap"),
+            "bootstrap_projects_dir": str(projects_dir),
+        }
+
+        with patch("core_mcp.tools.project.Settings", return_value=type("S", (), settings_patch)()):
+            fn = _get_tool_fn(mcp_server, "project_add_wif")
+            result = await fn(
+                project_id="my-project",
+                access_type="owner",
+                access_value="Gianlucaboni",
+            )
+
+        assert "already exists" in result
+
+    @pytest.mark.asyncio
+    async def test_fails_without_project_number(self, mcp_server):
+        """Returns error when seed_project_number is not set."""
+        settings_patch = {
+            "seed_project_id": "my-seed",
+            "seed_project_number": "",
+            "org_id": "123",
+            "github_owner": "",
             "bootstrap_dir": "/tmp",
             "bootstrap_projects_dir": "/tmp/projects",
         }
 
         with patch("core_mcp.tools.project.Settings", return_value=type("S", (), settings_patch)()):
-            fn = _get_tool_fn(mcp_server, "project_link_github")
-            result = await fn(project_id="x", github_repo="a/b")
+            fn = _get_tool_fn(mcp_server, "project_add_wif")
+            result = await fn(
+                project_id="x",
+                access_type="owner",
+                access_value="someone",
+            )
 
         assert "Error" in result
-        assert "CORE_MCP_SEED_PROJECT_ID" in result
+        assert "CORE_MCP_SEED_PROJECT_NUMBER" in result
+
+    @pytest.mark.asyncio
+    async def test_rejects_invalid_type(self, mcp_server):
+        """Returns error for invalid access_type."""
+        settings_patch = {
+            "seed_project_id": "my-seed",
+            "seed_project_number": "123",
+            "org_id": "123",
+            "github_owner": "",
+            "bootstrap_dir": "/tmp",
+            "bootstrap_projects_dir": "/tmp/projects",
+        }
+
+        with patch("core_mcp.tools.project.Settings", return_value=type("S", (), settings_patch)()):
+            fn = _get_tool_fn(mcp_server, "project_add_wif")
+            result = await fn(
+                project_id="x",
+                access_type="invalid",
+                access_value="someone",
+            )
+
+        assert "Error" in result
+        assert "'owner' or 'repo'" in result
+
+
+# ---------------------------------------------------------------------------
+# project_remove_wif
+# ---------------------------------------------------------------------------
+
+class TestProjectRemoveWif:
+    @pytest.mark.asyncio
+    async def test_removes_wif_entry(self, mcp_server, tmp_path):
+        """Verify project_remove_wif removes a github_access entry."""
+        projects_dir = tmp_path / "bootstrap" / "projects"
+        projects_dir.mkdir(parents=True)
+
+        tfvars_path = projects_dir / "projects.auto.tfvars.json"
+        tfvars_path.write_text(json.dumps({
+            "seed_project_id": "my-seed",
+            "org_id": "123",
+            "wif_pool_name": "",
+            "client_projects": {
+                "my-project": {
+                    "project_id": "my-project",
+                    "github_access": [
+                        {"type": "owner", "value": "Gianlucaboni"},
+                        {"type": "repo", "value": "AltroUser/repo"},
+                    ],
+                },
+            },
+        }))
+
+        ok = RunResult(0, "ok", "")
+
+        async def mock_run(*args, cwd=None, timeout=None):
+            return ok
+
+        settings_patch = {
+            "seed_project_id": "my-seed",
+            "seed_project_number": "123456",
+            "org_id": "123",
+            "github_owner": "",
+            "bootstrap_dir": str(tmp_path / "bootstrap"),
+            "bootstrap_projects_dir": str(projects_dir),
+        }
+
+        with patch("core_mcp.tools.project.run_command", side_effect=mock_run), \
+             patch("core_mcp.tools.project.Settings", return_value=type("S", (), settings_patch)()):
+
+            fn = _get_tool_fn(mcp_server, "project_remove_wif")
+            result = await fn(
+                project_id="my-project",
+                access_type="repo",
+                access_value="AltroUser/repo",
+            )
+
+        data = json.loads(tfvars_path.read_text())
+        access = data["client_projects"]["my-project"]["github_access"]
+        assert len(access) == 1
+        assert access[0] == {"type": "owner", "value": "Gianlucaboni"}
+        assert "WIF access removed" in result
+        assert "Remaining WIF access (1 entries)" in result
+
+    @pytest.mark.asyncio
+    async def test_remove_last_entry(self, mcp_server, tmp_path):
+        """Removing the last entry warns about no remaining access."""
+        projects_dir = tmp_path / "bootstrap" / "projects"
+        projects_dir.mkdir(parents=True)
+
+        tfvars_path = projects_dir / "projects.auto.tfvars.json"
+        tfvars_path.write_text(json.dumps({
+            "seed_project_id": "my-seed",
+            "org_id": "123",
+            "wif_pool_name": "",
+            "client_projects": {
+                "my-project": {
+                    "project_id": "my-project",
+                    "github_access": [{"type": "owner", "value": "Gianlucaboni"}],
+                },
+            },
+        }))
+
+        ok = RunResult(0, "ok", "")
+
+        async def mock_run(*args, cwd=None, timeout=None):
+            return ok
+
+        settings_patch = {
+            "seed_project_id": "my-seed",
+            "seed_project_number": "123456",
+            "org_id": "123",
+            "github_owner": "",
+            "bootstrap_dir": str(tmp_path / "bootstrap"),
+            "bootstrap_projects_dir": str(projects_dir),
+        }
+
+        with patch("core_mcp.tools.project.run_command", side_effect=mock_run), \
+             patch("core_mcp.tools.project.Settings", return_value=type("S", (), settings_patch)()):
+
+            fn = _get_tool_fn(mcp_server, "project_remove_wif")
+            result = await fn(
+                project_id="my-project",
+                access_type="owner",
+                access_value="Gianlucaboni",
+            )
+
+        assert "No WIF access remains" in result
+
+    @pytest.mark.asyncio
+    async def test_remove_nonexistent_entry(self, mcp_server, tmp_path):
+        """Removing an entry that doesn't exist is a no-op."""
+        projects_dir = tmp_path / "bootstrap" / "projects"
+        projects_dir.mkdir(parents=True)
+
+        tfvars_path = projects_dir / "projects.auto.tfvars.json"
+        tfvars_path.write_text(json.dumps({
+            "seed_project_id": "my-seed",
+            "org_id": "123",
+            "wif_pool_name": "",
+            "client_projects": {
+                "my-project": {
+                    "project_id": "my-project",
+                    "github_access": [{"type": "owner", "value": "Gianlucaboni"}],
+                },
+            },
+        }))
+
+        settings_patch = {
+            "seed_project_id": "my-seed",
+            "seed_project_number": "123456",
+            "org_id": "123",
+            "github_owner": "",
+            "bootstrap_dir": str(tmp_path / "bootstrap"),
+            "bootstrap_projects_dir": str(projects_dir),
+        }
+
+        with patch("core_mcp.tools.project.Settings", return_value=type("S", (), settings_patch)()):
+            fn = _get_tool_fn(mcp_server, "project_remove_wif")
+            result = await fn(
+                project_id="my-project",
+                access_type="repo",
+                access_value="nonexistent/repo",
+            )
+
+        assert "not found" in result
+        assert "No changes made" in result
 
 
 # ---------------------------------------------------------------------------
@@ -285,6 +590,8 @@ class TestProjectList:
         settings_patch = {
             "org_id": "123",
             "seed_project_id": "seed",
+            "seed_project_number": "999",
+            "github_owner": "",
             "bootstrap_dir": "/tmp",
             "bootstrap_projects_dir": "/tmp/projects",
         }

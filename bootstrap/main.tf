@@ -65,7 +65,7 @@ module "project_sa" {
   seed_project_id = var.seed_project_id
   labels          = var.seed_labels
 
-  github_repo   = each.value.github_repo
+  github_access = each.value.github_access
   wif_pool_name = google_iam_workload_identity_pool.github.name
   wif_pool_id   = "cloudseed-github-pool"
 }

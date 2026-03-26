@@ -174,23 +174,32 @@ resource "google_project_iam_member" "data_additional" {
 # Enables GitHub Actions in the specified repo to authenticate as SA Deploy
 # via Workload Identity Federation. No SA keys needed.
 
+locals {
+  # Build a map keyed by "owner-<value>" or "repo-<owner>-<repo>" for for_each
+  github_access_map = {
+    for access in var.github_access :
+    "${access.type}-${replace(lower(access.value), "/", "-")}" => access
+  }
+}
+
 resource "google_iam_workload_identity_pool_provider" "github" {
-  count = var.github_repo != "" ? 1 : 0
+  for_each = local.github_access_map
 
   provider                           = google-beta
   project                            = var.seed_project_id
   workload_identity_pool_id          = var.wif_pool_id
-  workload_identity_pool_provider_id = "${local.sa_prefix}-github"
-  display_name                       = "GitHub Actions — ${var.project_name}"
-  description                        = "OIDC provider for ${var.github_repo}"
+  workload_identity_pool_provider_id = "${local.sa_prefix}-${substr(md5(each.key), 0, 8)}"
+  display_name                       = "GitHub — ${var.project_name} (${each.value.value})"
+  description                        = each.value.type == "owner" ? "OIDC for all repos owned by ${each.value.value}" : "OIDC for repo ${each.value.value}"
 
   attribute_mapping = {
-    "google.subject"       = "assertion.sub"
-    "attribute.actor"      = "assertion.actor"
-    "attribute.repository" = "assertion.repository"
+    "google.subject"              = "assertion.sub"
+    "attribute.actor"             = "assertion.actor"
+    "attribute.repository"        = "assertion.repository"
+    "attribute.repository_owner"  = "assertion.repository_owner"
   }
 
-  attribute_condition = "assertion.repository == '${var.github_repo}'"
+  attribute_condition = each.value.type == "owner" ? "attribute.repository_owner == '${each.value.value}'" : "attribute.repository == '${each.value.value}'"
 
   oidc {
     issuer_uri = "https://token.actions.githubusercontent.com"
@@ -198,9 +207,9 @@ resource "google_iam_workload_identity_pool_provider" "github" {
 }
 
 resource "google_service_account_iam_member" "deploy_wif_binding" {
-  count = var.github_repo != "" ? 1 : 0
+  for_each = local.github_access_map
 
   service_account_id = google_service_account.deploy.name
   role               = "roles/iam.workloadIdentityUser"
-  member             = "principalSet://iam.googleapis.com/${var.wif_pool_name}/attribute.repository/${var.github_repo}"
+  member             = each.value.type == "owner" ? "principalSet://iam.googleapis.com/${var.wif_pool_name}/attribute.repository_owner/${each.value.value}" : "principalSet://iam.googleapis.com/${var.wif_pool_name}/attribute.repository/${each.value.value}"
 }

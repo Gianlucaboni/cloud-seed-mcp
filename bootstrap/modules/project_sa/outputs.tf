@@ -32,7 +32,10 @@ output "data_sa_name" {
   value       = google_service_account.data.name
 }
 
-output "wif_provider_name" {
-  description = "Full resource name of the WIF provider (empty if no GitHub repo configured)"
-  value       = var.github_repo != "" ? google_iam_workload_identity_pool_provider.github[0].name : ""
+output "wif_provider_names" {
+  description = "Map of GitHub access keys to their WIF provider resource names"
+  value = {
+    for key, provider in google_iam_workload_identity_pool_provider.github :
+    key => provider.name
+  }
 }

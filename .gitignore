@@ -50,3 +50,4 @@ service-account*.json
 *.log
 logs/
 newgoogle.txt
+.mcp.json

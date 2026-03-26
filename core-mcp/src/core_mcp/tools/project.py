@@ -3,6 +3,10 @@
 Creates new client projects, enables required APIs, prepares the
 Terraform working directory, and provisions the per-project SA
 hierarchy via the bootstrap Terraform module.
+
+WIF (Workload Identity Federation) access is managed per-project
+as an additive list — each entry creates a separate WIF provider,
+allowing multiple GitHub identities to deploy to the same project.
 """
 
 from __future__ import annotations
@@ -15,6 +19,14 @@ from mcp.server.fastmcp import FastMCP
 
 from core_mcp.config import Settings
 from core_mcp.tools._subprocess import run_command
+
+# The WIF pool ID is a fixed constant — always created by bootstrap.
+_WIF_POOL_ID = "cloudseed-github-pool"
+
+
+def _build_wif_pool_name(project_number: str) -> str:
+    """Construct the full WIF pool resource name from the seed project number."""
+    return f"projects/{project_number}/locations/global/workloadIdentityPools/{_WIF_POOL_ID}"
 
 
 # APIs that every client project needs.
@@ -34,7 +46,7 @@ _DEFAULT_APIS = [
 def _read_client_projects(tfvars_path: str) -> dict:
     """Read existing client_projects from the projects tfvars JSON file.
 
-    Returns a dict of {name: {project_id, github_repo}}.
+    Returns a dict of {name: {project_id, github_access}}.
     """
     if not os.path.isfile(tfvars_path):
         return {}
@@ -58,7 +70,6 @@ def _write_projects_tfvars(
     """Write the projects.auto.tfvars.json file with updated client_projects.
 
     Uses JSON format (.auto.tfvars.json) which Terraform natively supports.
-    This avoids HCL parsing issues and makes round-tripping trivial.
     """
     data = {
         "seed_project_id": seed_project_id,
@@ -79,7 +90,7 @@ def register(mcp: FastMCP) -> None:
         display_name: str = "",
         region: str = "europe-west1",
         billing_account_id: str = "",
-        github_repo: str = "",
+        github_owner: str = "",
         tf_base_dir: str = "/opt/cloud-seed-mcp/projects",
     ) -> str:
         """Create a new GCP project with full SA hierarchy.
@@ -92,6 +103,10 @@ def register(mcp: FastMCP) -> None:
         5. Updates the bootstrap configuration and runs ``terraform apply``
            to create the per-project SA hierarchy (Runtime, Deploy, Data).
 
+        The project is automatically configured with WIF access for the
+        default GitHub owner (from CORE_MCP_GITHUB_OWNER env var). Use
+        ``project_add_wif`` / ``project_remove_wif`` to modify access later.
+
         Args:
             project_id: Unique GCP project identifier (6-30 chars,
                         lowercase letters, digits, hyphens).
@@ -101,12 +116,15 @@ def register(mcp: FastMCP) -> None:
             billing_account_id: GCP billing account ID to link.
                                 If empty, the tool will attempt to find
                                 the first available billing account.
-            github_repo: Optional GitHub repo (owner/repo) for WIF CI/CD.
+            github_owner: GitHub account/org for WIF CI/CD access.
+                          If empty, falls back to CORE_MCP_GITHUB_OWNER.
             tf_base_dir: Base directory for per-project Terraform dirs.
         """
         settings = Settings()
         if not display_name:
             display_name = project_id
+        if not github_owner:
+            github_owner = settings.github_owner
 
         lines: list[str] = []
 
@@ -120,7 +138,7 @@ def register(mcp: FastMCP) -> None:
 
         create_result = await run_command(*create_args)
         if not create_result.success:
-            if "already exists" in create_result.stderr.lower():
+            if "already exists" in create_result.stderr.lower() or "already in use" in create_result.stderr.lower():
                 lines.append(f"Project '{project_id}' already exists — continuing.")
             else:
                 return (
@@ -129,28 +147,6 @@ def register(mcp: FastMCP) -> None:
                 )
         else:
             lines.append(f"Project '{project_id}' created.")
-
-        # ── 1b. Remove auto-granted Owner role ─────────────────────
-        # GCP automatically grants roles/owner to the SA that creates a
-        # project. The Orchestrator should NOT be Owner — it gets specific
-        # roles (editor, projectIamAdmin, etc.) via Terraform instead.
-        if settings.seed_project_id:
-            orchestrator_sa = (
-                f"cloudseed-orchestrator@{settings.seed_project_id}"
-                ".iam.gserviceaccount.com"
-            )
-            remove_result = await run_command(
-                "gcloud", "projects", "remove-iam-policy-binding", project_id,
-                f"--member=serviceAccount:{orchestrator_sa}",
-                "--role=roles/owner",
-                "--quiet",
-            )
-            if remove_result.success:
-                lines.append("Removed auto-granted Owner role from Orchestrator SA.")
-            else:
-                lines.append(
-                    f"Warning: could not remove Owner role — {remove_result.stderr}"
-                )
 
         # ── 2. Link billing ──────────────────────────────────────────
         if not billing_account_id:
@@ -174,6 +170,25 @@ def register(mcp: FastMCP) -> None:
                 lines.append(f"Warning: could not link billing — {link_result.stderr}")
         else:
             lines.append("Warning: no billing account found. APIs that require billing won't work.")
+
+        # ── 2b. Remove auto-granted Owner role ────────────────────
+        if settings.seed_project_id:
+            orchestrator_sa = (
+                f"cloudseed-orchestrator@{settings.seed_project_id}"
+                ".iam.gserviceaccount.com"
+            )
+            remove_result = await run_command(
+                "gcloud", "projects", "remove-iam-policy-binding", project_id,
+                f"--member=serviceAccount:{orchestrator_sa}",
+                "--role=roles/owner",
+                "--quiet",
+            )
+            if remove_result.success:
+                lines.append("Removed auto-granted Owner role from Orchestrator SA.")
+            else:
+                lines.append(
+                    f"Warning: could not remove Owner role — {remove_result.stderr}"
+                )
 
         # ── 3. Enable APIs ───────────────────────────────────────────
         enable_result = await run_command(
@@ -212,9 +227,6 @@ def register(mcp: FastMCP) -> None:
         lines.append(f"Terraform directory ready: {tf_dir}")
 
         # ── 5. Provision SA hierarchy via bootstrap/projects terraform ─
-        # This uses a SEPARATE terraform root module that manages ONLY
-        # per-project SAs (Runtime, Deploy, Data). It never touches the
-        # one-time infra (SA Installer, deny policies, WIF pool, etc.).
         projects_dir = settings.bootstrap_projects_dir
         tfvars_path = os.path.join(projects_dir, "projects.auto.tfvars.json")
 
@@ -229,22 +241,19 @@ def register(mcp: FastMCP) -> None:
                 "Skipping SA hierarchy provisioning."
             )
         else:
-            # Read WIF pool name from main bootstrap terraform output
-            wif_pool_name = ""
-            bootstrap_dir = settings.bootstrap_dir
-            wif_result = await run_command(
-                "terraform", "output", "-raw", "wif_pool_name",
-                "-no-color",
-                cwd=bootstrap_dir,
-            )
-            if wif_result.success and wif_result.stdout.strip():
-                wif_pool_name = wif_result.stdout.strip()
+            # Build WIF pool name from project number
+            wif_pool_name = _build_wif_pool_name(settings.seed_project_number) if settings.seed_project_number else ""
+
+            # Build github_access list with default owner
+            github_access: list[dict] = []
+            if github_owner:
+                github_access.append({"type": "owner", "value": github_owner})
 
             # Read existing client projects, add the new one
             existing = _read_client_projects(tfvars_path)
             existing[project_id] = {
                 "project_id": project_id,
-                "github_repo": github_repo,
+                "github_access": github_access,
             }
 
             _write_projects_tfvars(
@@ -276,6 +285,8 @@ def register(mcp: FastMCP) -> None:
                         "SA hierarchy provisioned: SA Runtime, SA Deploy, SA Data "
                         f"created for project '{project_id}'."
                     )
+                    if github_owner and wif_pool_name:
+                        lines.append(f"WIF access granted to GitHub owner '{github_owner}'.")
                 else:
                     lines.append(
                         f"Warning: terraform apply for SA hierarchy failed.\n"
@@ -291,26 +302,34 @@ def register(mcp: FastMCP) -> None:
         return "\n".join(lines)
 
     @mcp.tool()
-    async def project_link_github(
+    async def project_add_wif(
         project_id: str,
-        github_repo: str,
+        access_type: str,
+        access_value: str,
     ) -> str:
-        """Link a GitHub repository to a GCP project for CI/CD via WIF.
+        """Add a GitHub identity that can deploy to a project via WIF.
 
-        Creates the Workload Identity Federation provider that allows
-        GitHub Actions in the specified repo to authenticate as the
-        project's Deploy SA (no SA keys needed). Also returns all the
-        values needed to configure the GitHub Actions deploy workflow.
+        Each call adds a new WIF provider — multiple identities can deploy
+        to the same project. Use ``project_remove_wif`` to revoke access.
+
+        Examples:
+          - Allow all repos from a GitHub user/org:
+            ``project_add_wif(project_id="my-proj", access_type="owner", access_value="Gianlucaboni")``
+          - Allow a specific repo only:
+            ``project_add_wif(project_id="my-proj", access_type="repo", access_value="Gianlucaboni/my-repo")``
 
         This is a Yellow action.
 
         Args:
-            project_id: GCP project identifier (must already exist via
-                        ``project_create``).
-            github_repo: GitHub repository in ``owner/repo`` format.
+            project_id: GCP project identifier (must exist via ``project_create``).
+            access_type: Either ``"owner"`` (all repos from an account/org)
+                         or ``"repo"`` (a single repo in owner/repo format).
+            access_value: The GitHub owner name or owner/repo string.
         """
+        if access_type not in ("owner", "repo"):
+            return "Error: access_type must be 'owner' or 'repo'."
+
         settings = Settings()
-        lines: list[str] = []
 
         if not settings.seed_project_id or not settings.org_id:
             return (
@@ -318,38 +337,36 @@ def register(mcp: FastMCP) -> None:
                 "Cannot provision WIF without these."
             )
 
+        if not settings.seed_project_number:
+            return (
+                "Error: CORE_MCP_SEED_PROJECT_NUMBER must be set. "
+                "Cannot construct WIF pool name without the seed project number."
+            )
+
         projects_dir = settings.bootstrap_projects_dir
         if not os.path.isdir(projects_dir):
             return f"Error: projects directory '{projects_dir}' not found."
 
         tfvars_path = os.path.join(projects_dir, "projects.auto.tfvars.json")
+        wif_pool_name = _build_wif_pool_name(settings.seed_project_number)
 
-        # Read WIF pool name from main bootstrap terraform output
-        wif_pool_name = ""
-        bootstrap_dir = settings.bootstrap_dir
-        wif_result = await run_command(
-            "terraform", "output", "-raw", "wif_pool_name",
-            "-no-color",
-            cwd=bootstrap_dir,
-        )
-        if wif_result.success and wif_result.stdout.strip():
-            wif_pool_name = wif_result.stdout.strip()
-
-        if not wif_pool_name:
-            return (
-                "Error: could not read wif_pool_name from bootstrap terraform output. "
-                "Is the bootstrap infrastructure deployed?"
-            )
-
-        # Update client project with github_repo
+        # Read existing projects and update github_access
         existing = _read_client_projects(tfvars_path)
         if project_id not in existing:
-            existing[project_id] = {
-                "project_id": project_id,
-                "github_repo": github_repo,
-            }
-        else:
-            existing[project_id]["github_repo"] = github_repo
+            existing[project_id] = {"project_id": project_id, "github_access": []}
+
+        access_entry = {"type": access_type, "value": access_value}
+        current_access = existing[project_id].get("github_access", [])
+
+        # Check for duplicates
+        if any(a["type"] == access_type and a["value"] == access_value for a in current_access):
+            return (
+                f"WIF access already exists for project '{project_id}': "
+                f"{access_type}={access_value}. No changes made."
+            )
+
+        current_access.append(access_entry)
+        existing[project_id]["github_access"] = current_access
 
         _write_projects_tfvars(
             tfvars_path,
@@ -358,7 +375,6 @@ def register(mcp: FastMCP) -> None:
             wif_pool_name,
             existing,
         )
-        lines.append(f"Updated projects.auto.tfvars.json: {project_id} → {github_repo}")
 
         # terraform init + apply
         init_result = await run_command(
@@ -380,38 +396,121 @@ def register(mcp: FastMCP) -> None:
                 f"stderr: {apply_result.stderr[:500]}"
             )
 
-        lines.append("WIF provider created successfully.")
-
-        # Read terraform outputs for the deploy workflow values
+        # Build deploy SA email for output
         sa_prefix = f"cs-{project_id[:16]}"
         deploy_sa = f"{sa_prefix}-deploy@{settings.seed_project_id}.iam.gserviceaccount.com"
 
-        # Get the WIF provider name from terraform output
-        output_result = await run_command(
-            "terraform", "output", "-json", "wif_provider_names",
-            "-no-color",
+        lines = [
+            f"[YELLOW ACTION] WIF access added for project '{project_id}'.",
+            f"  Type: {access_type}",
+            f"  Value: {access_value}",
+            "",
+            "GitHub Actions deploy workflow configuration:",
+            f"  project_id: {project_id}",
+            f"  service_account_email: {deploy_sa}",
+            f"  workload_identity_provider: (check terraform output for full name)",
+            f"  wif_pool: {wif_pool_name}",
+            "",
+            f"Current WIF access for this project ({len(current_access)} entries):",
+        ]
+        for a in current_access:
+            lines.append(f"  - {a['type']}={a['value']}")
+
+        return "\n".join(lines)
+
+    @mcp.tool()
+    async def project_remove_wif(
+        project_id: str,
+        access_type: str,
+        access_value: str,
+    ) -> str:
+        """Remove a GitHub identity's deploy access from a project.
+
+        Removes the WIF provider for the specified identity. Other
+        identities' access is not affected.
+
+        This is a Yellow action.
+
+        Args:
+            project_id: GCP project identifier.
+            access_type: Either ``"owner"`` or ``"repo"``.
+            access_value: The GitHub owner name or owner/repo string to remove.
+        """
+        if access_type not in ("owner", "repo"):
+            return "Error: access_type must be 'owner' or 'repo'."
+
+        settings = Settings()
+
+        if not settings.seed_project_id or not settings.org_id:
+            return "Error: CORE_MCP_SEED_PROJECT_ID and CORE_MCP_ORG_ID must be set."
+
+        if not settings.seed_project_number:
+            return "Error: CORE_MCP_SEED_PROJECT_NUMBER must be set."
+
+        projects_dir = settings.bootstrap_projects_dir
+        if not os.path.isdir(projects_dir):
+            return f"Error: projects directory '{projects_dir}' not found."
+
+        tfvars_path = os.path.join(projects_dir, "projects.auto.tfvars.json")
+        wif_pool_name = _build_wif_pool_name(settings.seed_project_number)
+
+        existing = _read_client_projects(tfvars_path)
+        if project_id not in existing:
+            return f"Error: project '{project_id}' not found in configuration."
+
+        current_access = existing[project_id].get("github_access", [])
+        new_access = [
+            a for a in current_access
+            if not (a["type"] == access_type and a["value"] == access_value)
+        ]
+
+        if len(new_access) == len(current_access):
+            return (
+                f"WIF entry not found for project '{project_id}': "
+                f"{access_type}={access_value}. No changes made."
+            )
+
+        existing[project_id]["github_access"] = new_access
+
+        _write_projects_tfvars(
+            tfvars_path,
+            settings.seed_project_id,
+            settings.org_id,
+            wif_pool_name,
+            existing,
+        )
+
+        # terraform init + apply
+        init_result = await run_command(
+            "terraform", "init", "-input=false", "-no-color",
             cwd=projects_dir,
         )
-        wif_provider = ""
-        if output_result.success:
-            try:
-                providers = json.loads(output_result.stdout)
-                wif_provider = providers.get(project_id, "")
-            except (json.JSONDecodeError, ValueError):
-                pass
+        if not init_result.success:
+            return f"Error: terraform init failed — {init_result.stderr}"
 
-        lines.append("")
-        lines.append("GitHub Actions deploy workflow configuration:")
-        lines.append(f"  project_id: {project_id}")
-        lines.append(f"  service_account_email: {deploy_sa}")
-        lines.append(f"  workload_identity_provider: {wif_provider}")
-        lines.append(f"  github_repo: {github_repo}")
-        lines.append(f"  wif_pool: {wif_pool_name}")
-        lines.append("")
-        lines.append(
-            "Use these values in the GitHub Actions workflow "
-            "(deploy.yml) for WIF authentication."
+        apply_result = await run_command(
+            "terraform", "apply",
+            "-input=false", "-no-color", "-auto-approve",
+            cwd=projects_dir,
+            timeout=300.0,
         )
+        if not apply_result.success:
+            return (
+                f"Error: terraform apply failed.\n"
+                f"stderr: {apply_result.stderr[:500]}"
+            )
+
+        lines = [
+            f"[YELLOW ACTION] WIF access removed for project '{project_id}'.",
+            f"  Removed: {access_type}={access_value}",
+            "",
+        ]
+        if new_access:
+            lines.append(f"Remaining WIF access ({len(new_access)} entries):")
+            for a in new_access:
+                lines.append(f"  - {a['type']}={a['value']}")
+        else:
+            lines.append("No WIF access remains — GitHub Actions cannot deploy to this project.")
 
         return "\n".join(lines)
 
