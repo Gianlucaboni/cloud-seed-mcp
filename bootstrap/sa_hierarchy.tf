@@ -87,6 +87,14 @@ resource "google_project_iam_member" "orchestrator_seed_iam_admin" {
   member  = "serviceAccount:${google_service_account.orchestrator.email}"
 }
 
+# Orchestrator can manage WIF providers in the seed project's pool
+# (needed to create per-project GitHub OIDC providers)
+resource "google_project_iam_member" "orchestrator_wif_admin" {
+  project = var.seed_project_id
+  role    = "roles/iam.workloadIdentityPoolAdmin"
+  member  = "serviceAccount:${google_service_account.orchestrator.email}"
+}
+
 # Orchestrator can manage Cloud Scheduler (for ephemeral SA TTL)
 resource "google_project_iam_member" "orchestrator_scheduler_admin" {
   project = var.seed_project_id
