@@ -189,7 +189,7 @@ resource "google_iam_workload_identity_pool_provider" "github" {
   project                            = var.seed_project_id
   workload_identity_pool_id          = var.wif_pool_id
   workload_identity_pool_provider_id = "${local.sa_prefix}-${substr(md5(each.key), 0, 8)}"
-  display_name                       = "GitHub — ${var.project_name} (${each.value.value})"
+  display_name                       = substr("GH ${var.project_name} ${each.value.value}", 0, 32)
   description                        = each.value.type == "owner" ? "OIDC for all repos owned by ${each.value.value}" : "OIDC for repo ${each.value.value}"
 
   attribute_mapping = {
