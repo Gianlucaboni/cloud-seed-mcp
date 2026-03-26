@@ -204,21 +204,6 @@ def register(mcp: FastMCP) -> None:
         else:
             lines.append(f"Warning: some APIs may not have been enabled — {enable_result.stderr}")
 
-        # ── 3b. Create Artifact Registry repository ─────────────────
-        ar_result = await run_command(
-            "gcloud", "artifacts", "repositories", "create", _AR_REPO_NAME,
-            "--repository-format=docker",
-            "--location=europe-west1",
-            f"--project={project_id}",
-            "--quiet",
-        )
-        if ar_result.success:
-            lines.append(f"Artifact Registry repo '{_AR_REPO_NAME}' created.")
-        elif "already exists" in ar_result.stderr.lower():
-            lines.append(f"Artifact Registry repo '{_AR_REPO_NAME}' already exists.")
-        else:
-            lines.append(f"Warning: could not create AR repo — {ar_result.stderr}")
-
         # ── 4. Prepare Terraform directory ───────────────────────────
         tf_dir = os.path.join(tf_base_dir, project_id)
         os.makedirs(tf_dir, exist_ok=True)
@@ -305,6 +290,24 @@ def register(mcp: FastMCP) -> None:
                     )
                     if github_owner and wif_pool_name:
                         lines.append(f"WIF access granted to GitHub owner '{github_owner}'.")
+
+                    # ── 6. Create Artifact Registry repo ─────────────────
+                    # Must happen AFTER terraform apply, which grants the
+                    # Orchestrator editor role on the client project.
+                    ar_result = await run_command(
+                        "gcloud", "artifacts", "repositories", "create",
+                        _AR_REPO_NAME,
+                        "--repository-format=docker",
+                        f"--location={region}",
+                        f"--project={project_id}",
+                        "--quiet",
+                    )
+                    if ar_result.success:
+                        lines.append(f"Artifact Registry repo '{_AR_REPO_NAME}' created.")
+                    elif "already exists" in ar_result.stderr.lower():
+                        lines.append(f"Artifact Registry repo '{_AR_REPO_NAME}' already exists.")
+                    else:
+                        lines.append(f"Warning: could not create AR repo — {ar_result.stderr}")
                 else:
                     lines.append(
                         f"Warning: terraform apply for SA hierarchy failed.\n"
