@@ -175,22 +175,21 @@ if [[ "$CLEAN" == true ]]; then
   done
 
   # 2. Delete GCP project-level resources (may exist from a previous partial run)
+  #    Strategy: attempt delete directly (--quiet skips confirmation), ignore 404s.
+  #    No "describe" calls — they are slow and can hang on new/empty projects.
   log_info "Cleaning Cloud Seed GCP resources in project '$SEED_PROJECT_ID'..."
 
-  # Service accounts
+  # Service accounts — delete directly, ignore "not found"
   for sa in cloudseed-installer cloudseed-orchestrator cloudseed-ephemeral-mgr cloudseed-sa-cleanup; do
-    if gcloud iam service-accounts describe "${sa}@${SEED_PROJECT_ID}.iam.gserviceaccount.com" \
-        --project="$SEED_PROJECT_ID" &>/dev/null; then
-      gcloud iam service-accounts delete "${sa}@${SEED_PROJECT_ID}.iam.gserviceaccount.com" \
-        --project="$SEED_PROJECT_ID" --quiet && log_ok "Deleted SA: $sa" || \
-        log_warn "Could not delete SA: $sa"
-    fi
+    gcloud iam service-accounts delete "${sa}@${SEED_PROJECT_ID}.iam.gserviceaccount.com" \
+      --project="$SEED_PROJECT_ID" --quiet 2>/dev/null && \
+      log_ok "Deleted SA: $sa" || true
   done
 
   # WIF pool — gcloud soft-deletes with 30-day retention, so we undelete it
   # instead and let terraform import it into state later.
   gcloud iam workload-identity-pools undelete cloudseed-github-pool \
-    --location=global --project="$SEED_PROJECT_ID" --quiet &>/dev/null && \
+    --location=global --project="$SEED_PROJECT_ID" --quiet 2>/dev/null && \
     log_ok "Undeleted WIF pool: cloudseed-github-pool (was soft-deleted)" || true
   WIF_POOL_EXISTS=false
   if gcloud iam workload-identity-pools describe cloudseed-github-pool \
@@ -200,35 +199,24 @@ if [[ "$CLEAN" == true ]]; then
     log_info "WIF pool exists and is active — will be imported into terraform state."
   fi
 
-  # Custom IAM roles
+  # Custom IAM roles — delete directly, ignore "not found"
   for role in cloudSeedOrchestratorOps cloudSeedEphemeralReadOnly; do
-    if gcloud iam roles describe "$role" --project="$SEED_PROJECT_ID" &>/dev/null; then
-      gcloud iam roles delete "$role" --project="$SEED_PROJECT_ID" --quiet && \
-        log_ok "Deleted role: $role" || log_warn "Could not delete role: $role"
-    fi
+    gcloud iam roles delete "$role" --project="$SEED_PROJECT_ID" --quiet 2>/dev/null && \
+      log_ok "Deleted role: $role" || true
   done
 
-  # Pub/Sub topic
-  if gcloud pubsub topics describe cloudseed-ephemeral-sa-cleanup \
-      --project="$SEED_PROJECT_ID" &>/dev/null; then
-    gcloud pubsub topics delete cloudseed-ephemeral-sa-cleanup \
-      --project="$SEED_PROJECT_ID" --quiet && \
-      log_ok "Deleted Pub/Sub topic: cloudseed-ephemeral-sa-cleanup" || \
-      log_warn "Could not delete Pub/Sub topic"
-  fi
+  # Pub/Sub topic — delete directly, ignore "not found"
+  gcloud pubsub topics delete cloudseed-ephemeral-sa-cleanup \
+    --project="$SEED_PROJECT_ID" --quiet 2>/dev/null && \
+    log_ok "Deleted Pub/Sub topic: cloudseed-ephemeral-sa-cleanup" || true
 
-  # Cloud Scheduler job
-  if gcloud scheduler jobs describe cloudseed-ephemeral-sa-cleanup \
-      --location="$VM_ZONE" --project="$SEED_PROJECT_ID" &>/dev/null 2>&1 || \
-     gcloud scheduler jobs describe cloudseed-ephemeral-sa-cleanup \
-      --location="${VM_ZONE%-*}" --project="$SEED_PROJECT_ID" &>/dev/null 2>&1; then
-    gcloud scheduler jobs delete cloudseed-ephemeral-sa-cleanup \
-      --location="${VM_ZONE%-*}" --project="$SEED_PROJECT_ID" --quiet 2>/dev/null || \
-      gcloud scheduler jobs delete cloudseed-ephemeral-sa-cleanup \
-        --location="$VM_ZONE" --project="$SEED_PROJECT_ID" --quiet 2>/dev/null || \
-      log_warn "Could not delete Scheduler job"
-    log_ok "Deleted Scheduler job: cloudseed-ephemeral-sa-cleanup"
-  fi
+  # Cloud Scheduler job — try both region formats, ignore "not found"
+  gcloud scheduler jobs delete cloudseed-ephemeral-sa-cleanup \
+    --location="${VM_ZONE%-*}" --project="$SEED_PROJECT_ID" --quiet 2>/dev/null && \
+    log_ok "Deleted Scheduler job: cloudseed-ephemeral-sa-cleanup" || \
+  gcloud scheduler jobs delete cloudseed-ephemeral-sa-cleanup \
+    --location="$VM_ZONE" --project="$SEED_PROJECT_ID" --quiet 2>/dev/null && \
+    log_ok "Deleted Scheduler job: cloudseed-ephemeral-sa-cleanup" || true
 
   # 3. Delete deny policies (both project-level and org-level)
   # Uses IAM v2 REST API directly — gcloud CLI does not support denyPolicies kind.

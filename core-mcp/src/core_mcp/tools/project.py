@@ -204,6 +204,26 @@ def register(mcp: FastMCP) -> None:
         else:
             lines.append(f"Warning: some APIs may not have been enabled — {enable_result.stderr}")
 
+        # ── 3b. Disable default service accounts (overly broad perms) ─
+        project_number_result = await run_command(
+            "gcloud", "projects", "describe", project_id,
+            "--format=value(projectNumber)",
+        )
+        if project_number_result.success:
+            proj_num = project_number_result.stdout.strip()
+            for default_sa in [
+                f"{proj_num}-compute@developer.gserviceaccount.com",
+                f"{project_id}@appspot.gserviceaccount.com",
+            ]:
+                disable_result = await run_command(
+                    "gcloud", "iam", "service-accounts", "disable",
+                    default_sa, f"--project={project_id}", "--quiet",
+                )
+                if disable_result.success:
+                    lines.append(f"Disabled default SA: {default_sa}")
+                elif "not found" not in disable_result.stderr.lower():
+                    lines.append(f"Warning: could not disable {default_sa}")
+
         # ── 4. Prepare Terraform directory ───────────────────────────
         tf_dir = os.path.join(tf_base_dir, project_id)
         os.makedirs(tf_dir, exist_ok=True)
