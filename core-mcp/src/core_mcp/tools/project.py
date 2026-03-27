@@ -419,7 +419,7 @@ def register(mcp: FastMCP) -> None:
 
         # Build deploy SA email for output
         sa_prefix = f"cs-{project_id[:16]}"
-        deploy_sa = f"{sa_prefix}-deploy@{settings.seed_project_id}.iam.gserviceaccount.com"
+        deploy_sa = f"{sa_prefix}-deploy@{project_id}.iam.gserviceaccount.com"
 
         lines = [
             f"[YELLOW ACTION] WIF access added for project '{project_id}'.",

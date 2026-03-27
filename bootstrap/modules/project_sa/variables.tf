@@ -18,7 +18,7 @@ variable "project_id" {
 }
 
 variable "seed_project_id" {
-  description = "GCP project ID of the seed project (where SAs are created)"
+  description = "GCP project ID of the seed project (where WIF pool lives)"
   type        = string
 }
 

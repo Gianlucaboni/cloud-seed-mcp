@@ -6,9 +6,11 @@
 #   - SA Deploy:  Pushes images and deploys (no infrastructure access)
 #   - SA Data:    Read/write on buckets and databases (no infrastructure access)
 #
-# All SAs are created in the SEED project but granted permissions only in
-# their target client project. This ensures cross-project isolation: an
-# IoT project SA cannot see Analytics project resources.
+# All SAs are created in the CLIENT project itself. This ensures natural
+# structural isolation (IoT project SA cannot see Analytics project resources)
+# and allows Cloud Run to use the Runtime SA as service identity (which
+# requires the SA to be in the same project as the service).
+# WIF resources (pool providers) remain in the SEED project.
 ###############################################################################
 
 locals {
@@ -25,7 +27,7 @@ resource "google_service_account" "runtime" {
   account_id   = "${local.sa_prefix}-runtime"
   display_name = "Cloud Seed — ${var.project_name} Runtime"
   description  = "Runtime SA for Cloud Run services and VMs in project ${var.project_name}. Minimal operational permissions."
-  project      = var.seed_project_id
+  project      = var.project_id
 }
 
 # Runtime SA: invoke Cloud Run services
@@ -73,7 +75,7 @@ resource "google_service_account" "deploy" {
   account_id   = "${local.sa_prefix}-deploy"
   display_name = "Cloud Seed — ${var.project_name} Deploy"
   description  = "Deploy SA for project ${var.project_name}. Can push images and deploy to Cloud Run. No infrastructure permissions."
-  project      = var.seed_project_id
+  project      = var.project_id
 }
 
 # Deploy SA: manage Cloud Run services (create, update, delete services)
@@ -130,7 +132,7 @@ resource "google_service_account" "data" {
   account_id   = "${local.sa_prefix}-data"
   display_name = "Cloud Seed — ${var.project_name} Data"
   description  = "Data SA for project ${var.project_name}. Read/write on buckets and databases. No infrastructure permissions."
-  project      = var.seed_project_id
+  project      = var.project_id
 }
 
 # Data SA: BigQuery data read/write

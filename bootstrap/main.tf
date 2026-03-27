@@ -54,7 +54,7 @@ resource "google_iam_workload_identity_pool" "github" {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Per-Project SA module — creates Runtime, Deploy, Data SAs for each client
+# Per-Project SA module — creates Runtime, Deploy, Data SAs in each client project
 # ─────────────────────────────────────────────────────────────────────────────
 module "project_sa" {
   source   = "./modules/project_sa"

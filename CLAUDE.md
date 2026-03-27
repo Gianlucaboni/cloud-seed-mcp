@@ -84,6 +84,7 @@ Core MCP generates Terraform plan
 - **SA Runtime:** Used by Cloud Run services and VMs, minimal permissions for operation
 - **SA Deploy:** Can push images and deploy, cannot touch infrastructure
 - **SA Data:** Read/write on project buckets and databases, no infrastructure permissions
+- **Created in the client project** (not the seed) — ensures Cloud Run can use the Runtime SA as service identity and provides natural structural isolation
 - **Structural isolation:** IoT project SA cannot see Analytics project resources
 
 ### SA Ephemeral
