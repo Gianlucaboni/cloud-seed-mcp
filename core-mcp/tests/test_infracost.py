@@ -121,10 +121,6 @@ class TestEstimateCosts:
 
         assert result == {"google_compute_instance.web": 28.11}
         mock_cmd.assert_called_once()
-        # Verify --currency EUR is passed
-        call_args = mock_cmd.call_args
-        assert "--currency" in call_args.args
-        assert "EUR" in call_args.args
 
     @pytest.mark.asyncio
     async def test_returns_none_on_command_failure(self):

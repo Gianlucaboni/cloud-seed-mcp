@@ -35,7 +35,6 @@ async def estimate_costs(module_path: str) -> dict[str, float] | None:
         "infracost", "breakdown",
         "--path", module_path,
         "--format", "json",
-        "--currency", "EUR",
         "--no-color",
         cwd=module_path,
         timeout=120.0,
