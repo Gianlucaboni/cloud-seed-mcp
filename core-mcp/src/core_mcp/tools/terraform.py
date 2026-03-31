@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 
 import httpx
+
+logger = logging.getLogger(__name__)
 from mcp.server.fastmcp import FastMCP
 
 from core_mcp.config import Settings
@@ -23,6 +26,12 @@ async def _validate_with_opa(
         enriched_input = dict(plan_json)
         if infracost_costs is not None:
             enriched_input["infracost_costs"] = infracost_costs
+            logger.info(
+                "OPA validation with Infracost costs (%d resources)",
+                len(infracost_costs),
+            )
+        else:
+            logger.info("OPA validation with static cost estimates (no Infracost data)")
 
         async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.post(
@@ -30,7 +39,12 @@ async def _validate_with_opa(
                 json={"input": enriched_input},
             )
             resp.raise_for_status()
-            return resp.json().get("result", []) or []
+            violations = resp.json().get("result", []) or []
+            if violations:
+                logger.warning("OPA denied plan with %d violation(s)", len(violations))
+            else:
+                logger.info("OPA approved plan (no violations)")
+            return violations
     except httpx.ConnectError:
         return [f"OPA unreachable at {opa_url} — cannot validate plan"]
     except httpx.HTTPStatusError as e:

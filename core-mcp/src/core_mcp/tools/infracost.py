@@ -54,7 +54,18 @@ async def estimate_costs(module_path: str) -> dict[str, float] | None:
         logger.warning("Infracost output is not valid JSON")
         return None
 
-    return _parse_costs(output)
+    costs = _parse_costs(output)
+    total = sum(costs.values())
+    logger.info(
+        "Infracost estimated %d resources, total $%.2f/month",
+        len(costs),
+        total,
+    )
+    for addr, cost in sorted(costs.items()):
+        if cost > 0:
+            logger.info("  %s: $%.2f/month", addr, cost)
+
+    return costs
 
 
 def _parse_costs(infracost_output: dict) -> dict[str, float]:
