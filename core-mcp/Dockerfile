@@ -19,6 +19,7 @@ RUN apt-get update -y && apt-get install -y --no-install-recommends \
     curl -fsSL https://github.com/infracost/infracost/releases/latest/download/infracost-linux-amd64.tar.gz \
         -o /tmp/infracost.tar.gz && \
     tar -xzf /tmp/infracost.tar.gz -C /usr/local/bin/ && \
+    mv /usr/local/bin/infracost-linux-amd64 /usr/local/bin/infracost && \
     rm /tmp/infracost.tar.gz && \
     # Cleanup
     apt-get clean && rm -rf /var/lib/apt/lists/*
