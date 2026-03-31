@@ -210,3 +210,143 @@ delete_plan := {
         }
     ]
 }
+
+# --------------------------------------------------------------------------- #
+# Infracost tests
+# --------------------------------------------------------------------------- #
+
+test_infracost_costs_used if {
+    result := terraform.deny with input as infracost_plan
+        with data.terraform.config as config
+    budget_violations := {msg | msg := result[_]; contains(msg, "Budget")}
+    count(budget_violations) == 0
+}
+
+test_infracost_expensive_exceeds_budget if {
+    result := terraform.deny with input as infracost_expensive_plan
+        with data.terraform.config as config
+    budget_violations := {msg | msg := result[_]; contains(msg, "Budget violation")}
+    count(budget_violations) > 0
+}
+
+test_infracost_single_resource_warning if {
+    result := terraform.deny with input as infracost_single_expensive_plan
+        with data.terraform.config as config
+    budget_warnings := {msg | msg := result[_]; contains(msg, "Budget warning")}
+    count(budget_warnings) > 0
+}
+
+test_fallback_to_static_when_no_infracost if {
+    result := terraform.deny with input as valid_plan
+        with data.terraform.config as config
+    budget_violations := {msg | msg := result[_]; contains(msg, "Budget")}
+    count(budget_violations) == 0
+}
+
+test_mixed_infracost_and_static if {
+    result := terraform.deny with input as mixed_cost_plan
+        with data.terraform.config as config
+    budget_violations := {msg | msg := result[_]; contains(msg, "Budget")}
+    count(budget_violations) == 0
+}
+
+# --------------------------------------------------------------------------- #
+# Infracost test fixtures
+# --------------------------------------------------------------------------- #
+
+infracost_plan := {
+    "resource_changes": [
+        {
+            "address": "google_compute_instance.web",
+            "type": "google_compute_instance",
+            "change": {
+                "actions": ["create"],
+                "after": {
+                    "name": "web",
+                    "zone": "europe-west1-b",
+                    "machine_type": "e2-medium",
+                    "labels": {},
+                    "guest_accelerator": []
+                }
+            }
+        }
+    ],
+    "infracost_costs": {
+        "google_compute_instance.web": 28.11
+    }
+}
+
+infracost_expensive_plan := {
+    "resource_changes": [
+        {
+            "address": "google_compute_instance.big_vm",
+            "type": "google_compute_instance",
+            "change": {
+                "actions": ["create"],
+                "after": {
+                    "name": "big-vm",
+                    "zone": "europe-west1-b",
+                    "machine_type": "n2-highmem-16",
+                    "labels": {},
+                    "guest_accelerator": []
+                }
+            }
+        }
+    ],
+    "infracost_costs": {
+        "google_compute_instance.big_vm": 758.34
+    }
+}
+
+infracost_single_expensive_plan := {
+    "resource_changes": [
+        {
+            "address": "google_sql_database_instance.prod_db",
+            "type": "google_sql_database_instance",
+            "change": {
+                "actions": ["create"],
+                "after": {
+                    "name": "prod-db",
+                    "region": "europe-west1"
+                }
+            }
+        }
+    ],
+    "infracost_costs": {
+        "google_sql_database_instance.prod_db": 280.0
+    }
+}
+
+mixed_cost_plan := {
+    "resource_changes": [
+        {
+            "address": "google_compute_instance.web",
+            "type": "google_compute_instance",
+            "change": {
+                "actions": ["create"],
+                "after": {
+                    "name": "web",
+                    "zone": "europe-west1-b",
+                    "machine_type": "e2-medium",
+                    "labels": {},
+                    "guest_accelerator": []
+                }
+            }
+        },
+        {
+            "address": "google_storage_bucket.data",
+            "type": "google_storage_bucket",
+            "change": {
+                "actions": ["create"],
+                "after": {
+                    "name": "data",
+                    "location": "europe-west1",
+                    "encryption": [{"default_kms_key_name": "key"}]
+                }
+            }
+        }
+    ],
+    "infracost_costs": {
+        "google_compute_instance.web": 28.11
+    }
+}

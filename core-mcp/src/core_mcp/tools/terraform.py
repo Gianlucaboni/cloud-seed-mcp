@@ -10,15 +10,24 @@ from mcp.server.fastmcp import FastMCP
 
 from core_mcp.config import Settings
 from core_mcp.tools._subprocess import run_command
+from core_mcp.tools.infracost import estimate_costs
 
 
-async def _validate_with_opa(plan_json: dict, opa_url: str) -> list[str]:
+async def _validate_with_opa(
+    plan_json: dict,
+    opa_url: str,
+    infracost_costs: dict[str, float] | None = None,
+) -> list[str]:
     """POST plan JSON to OPA and return list of violations (empty = approved)."""
     try:
+        enriched_input = dict(plan_json)
+        if infracost_costs is not None:
+            enriched_input["infracost_costs"] = infracost_costs
+
         async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.post(
                 f"{opa_url}/v1/data/terraform/deny",
-                json={"input": plan_json},
+                json={"input": enriched_input},
             )
             resp.raise_for_status()
             return resp.json().get("result", []) or []
@@ -111,6 +120,18 @@ def register(mcp: FastMCP) -> None:
         else:
             lines.append("  (no changes)")
 
+        # --- Infracost cost preview (best-effort) ---
+        cost_map = await estimate_costs(module_path)
+        if cost_map:
+            lines.append("")
+            lines.append("Estimated costs (Infracost):")
+            total = 0.0
+            for addr, cost in sorted(cost_map.items()):
+                if cost > 0:
+                    lines.append(f"  {addr}: {cost:.2f} EUR/month")
+                    total += cost
+            lines.append(f"  TOTAL: {total:.2f} EUR/month")
+
         return "\n".join(lines)
 
     @mcp.tool()
@@ -151,8 +172,13 @@ def register(mcp: FastMCP) -> None:
             plan_json = None
 
         if plan_json:
+            # --- Infracost cost estimation (best-effort) ---
+            cost_estimates = await estimate_costs(module_path)
+
             settings = Settings()
-            violations = await _validate_with_opa(plan_json, settings.opa_url)
+            violations = await _validate_with_opa(
+                plan_json, settings.opa_url, infracost_costs=cost_estimates,
+            )
             if violations:
                 violation_list = "\n".join(f"  - {v}" for v in violations)
                 return (

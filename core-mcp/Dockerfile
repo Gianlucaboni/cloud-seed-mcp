@@ -15,6 +15,11 @@ RUN apt-get update -y && apt-get install -y --no-install-recommends \
     curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg \
         | gpg --dearmor -o /usr/share/keyrings/cloud.google.gpg && \
     apt-get update -y && apt-get install -y --no-install-recommends google-cloud-cli && \
+    # Infracost
+    curl -fsSL https://github.com/infracost/infracost/releases/latest/download/infracost-linux-amd64.tar.gz \
+        -o /tmp/infracost.tar.gz && \
+    tar -xzf /tmp/infracost.tar.gz -C /usr/local/bin/ && \
+    rm /tmp/infracost.tar.gz && \
     # Cleanup
     apt-get clean && rm -rf /var/lib/apt/lists/*
 

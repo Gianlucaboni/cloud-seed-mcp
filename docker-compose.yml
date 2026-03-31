@@ -21,6 +21,7 @@ services:
       - CORE_MCP_SEED_PROJECT_NUMBER=${CORE_MCP_SEED_PROJECT_NUMBER}
       - CORE_MCP_ORG_ID=${CORE_MCP_ORG_ID}
       - CORE_MCP_GITHUB_OWNER=${CORE_MCP_GITHUB_OWNER}
+      - INFRACOST_API_KEY=${INFRACOST_API_KEY}
       - UVICORN_HOST=0.0.0.0
       - UVICORN_PORT=8000
     volumes:
@@ -39,9 +40,10 @@ services:
 
   opa:
     image: openpolicyagent/opa:latest
-    command: run --server --addr :8181 /policies
+    command: run --server --addr :8181 /policies /data
     volumes:
       - ./policy-engine/policies:/policies:ro
+      - ./policy-engine/data:/data:ro
     healthcheck:
       test: ["CMD", "/opa", "eval", "true"]
       interval: 10s

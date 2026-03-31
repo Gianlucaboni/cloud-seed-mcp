@@ -3,9 +3,11 @@
 # Validates that the estimated monthly cost of all resources in a Terraform
 # plan does not exceed the configurable budget limit.
 #
-# Cost estimates are approximate per-resource-type averages stored in
-# data.terraform.config.cost_estimates_eur_monthly. The budget limit is
-# data.terraform.config.budget_limit_eur_monthly (default 500 EUR/month).
+# Cost sources (in order of priority):
+#   1. Infracost per-resource costs from input.infracost_costs (real pricing)
+#   2. Static per-type averages from data.terraform.config.cost_estimates_eur_monthly
+#
+# The budget limit is data.terraform.config.budget_limit_eur_monthly (default 500 EUR/month).
 
 package terraform
 
@@ -30,13 +32,35 @@ cost_estimates := data.terraform.config.cost_estimates_eur_monthly if {
 }
 
 # --------------------------------------------------------------------------- #
+# Infracost costs (from input, injected by Python layer)
+# --------------------------------------------------------------------------- #
+
+default infracost_costs := {}
+
+infracost_costs := input.infracost_costs if {
+    input.infracost_costs
+}
+
+# --------------------------------------------------------------------------- #
+# Helper: per-resource cost with Infracost priority
+# --------------------------------------------------------------------------- #
+
+# If Infracost provided a cost for this specific resource address, use it.
+# Otherwise fall back to the static per-type estimate.
+resource_cost(resource) := cost if {
+    cost := infracost_costs[resource.address]
+} else := cost if {
+    cost := object.get(cost_estimates, resource.type, 0)
+}
+
+# --------------------------------------------------------------------------- #
 # Deny: total estimated monthly cost exceeds budget
 # --------------------------------------------------------------------------- #
 
 total_estimated_cost := sum([cost |
     resource := input.resource_changes[_]
     resource.change.actions[_] in {"create", "update"}
-    cost := object.get(cost_estimates, resource.type, 0)
+    cost := resource_cost(resource)
 ])
 
 deny contains msg if {
@@ -48,16 +72,16 @@ deny contains msg if {
 }
 
 # --------------------------------------------------------------------------- #
-# Deny: single resource type with extremely high cost (> 50% of budget)
+# Deny: single resource with extremely high cost (> 50% of budget)
 # --------------------------------------------------------------------------- #
 
 deny contains msg if {
     resource := input.resource_changes[_]
     resource.change.actions[_] in {"create", "update"}
-    cost := object.get(cost_estimates, resource.type, 0)
+    cost := resource_cost(resource)
     cost > budget_limit * 0.5
     msg := sprintf(
-        "Budget warning: %s — resource type %s alone costs %.2f EUR/month (>50%% of %.2f EUR budget)",
-        [resource.address, resource.type, cost, budget_limit]
+        "Budget warning: %s costs %.2f EUR/month (>50%% of %.2f EUR budget)",
+        [resource.address, cost, budget_limit]
     )
 }
