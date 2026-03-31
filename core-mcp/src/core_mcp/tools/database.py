@@ -72,13 +72,13 @@ def _write_cloudsql_hcl(
 
           settings {{
             tier = "{tier}"
+
+            user_labels = {{
+              managed_by = "cloud-seed"
+            }}
           }}
 
           deletion_protection = true
-
-          labels = {{
-            managed_by = "cloud-seed"
-          }}
         }}
     """)
     os.makedirs(tf_dir, exist_ok=True)
