@@ -91,6 +91,14 @@ if [ -n "$GITHUB_OWNER" ]; then
     echo "Detected GitHub owner: $GITHUB_OWNER"
 fi
 
+# Inject INFRACOST_API_KEY from VM metadata (optional — enables real cost estimation)
+INFRACOST_API_KEY=$(curl -s -H "Metadata-Flavor: Google" \
+    "http://metadata.google.internal/computeMetadata/v1/instance/attributes/infracost-api-key" 2>/dev/null || echo "")
+if [ -n "$INFRACOST_API_KEY" ]; then
+    sed -i "s|^INFRACOST_API_KEY=.*|INFRACOST_API_KEY=${INFRACOST_API_KEY}|" .env
+    echo "Detected Infracost API key"
+fi
+
 # ─── Export HOME for docker-compose volume mount ─────────────────────────────
 export HOME=/root
 

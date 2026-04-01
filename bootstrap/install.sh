@@ -40,6 +40,7 @@ SKIP_DISABLE=false
 SKIP_VM=false
 CLEAN=false
 GITHUB_OWNER=""
+INFRACOST_API_KEY=""
 
 usage() {
   cat <<EOF
@@ -54,6 +55,7 @@ Options:
   --vm-zone=ZONE         GCP zone for the seed VM (default: europe-west1-b)
   --vm-machine-type=TYPE Machine type for the VM (default: e2-medium)
   --github-owner=OWNER   GitHub account/org allowed to deploy via WIF (e.g. Gianlucaboni)
+  --infracost-api-key=KEY  Infracost API key for real cost estimation (optional)
   --auto-approve         Skip terraform apply confirmation prompt
   --skip-disable         Do not disable the Installer SA (for development only)
   --skip-vm              Do not create the seed VM (SA hierarchy only)
@@ -95,6 +97,9 @@ for arg in "$@"; do
       ;;
     --github-owner=*)
       GITHUB_OWNER="${arg#*=}"
+      ;;
+    --infracost-api-key=*)
+      INFRACOST_API_KEY="${arg#*=}"
       ;;
     --clean)
       CLEAN=true
@@ -449,7 +454,7 @@ else
         --scopes=cloud-platform \
         --tags=cloud-seed \
         --metadata-from-file=startup-script="$SCRIPT_DIR/vm-startup.sh" \
-        ${GITHUB_OWNER:+--metadata=github-owner="$GITHUB_OWNER"} \
+        --metadata=github-owner="${GITHUB_OWNER}",infracost-api-key="${INFRACOST_API_KEY}" \
         --quiet
 
       log_ok "VM 'cloud-seed-vm' created in $VM_ZONE"
