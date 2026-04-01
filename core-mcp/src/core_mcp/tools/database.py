@@ -17,6 +17,16 @@ from mcp.server.fastmcp import FastMCP
 from core_mcp.tools._subprocess import run_command
 
 
+def _has_provider(tf_dir: str) -> bool:
+    """Check if a provider.tf already exists in the directory."""
+    return os.path.isfile(os.path.join(tf_dir, "provider.tf"))
+
+
+def _provider_block(project_id: str) -> str:
+    """Return a provider block only if needed."""
+    return f'provider "google" {{\n  project = "{project_id}"\n}}\n\n'
+
+
 def _write_bigquery_hcl(
     tf_dir: str,
     project_id: str,
@@ -27,11 +37,8 @@ def _write_bigquery_hcl(
 
     Returns the path to the written .tf file.
     """
-    hcl = textwrap.dedent(f"""\
-        provider "google" {{
-          project = "{project_id}"
-        }}
-
+    provider = "" if _has_provider(tf_dir) else _provider_block(project_id)
+    hcl = provider + textwrap.dedent(f"""\
         resource "google_bigquery_dataset" "{dataset_id}" {{
           dataset_id = "{dataset_id}"
           location   = "{location}"
@@ -60,11 +67,8 @@ def _write_cloudsql_hcl(
 
     Returns the path to the written .tf file.
     """
-    hcl = textwrap.dedent(f"""\
-        provider "google" {{
-          project = "{project_id}"
-        }}
-
+    provider = "" if _has_provider(tf_dir) else _provider_block(project_id)
+    hcl = provider + textwrap.dedent(f"""\
         resource "google_sql_database_instance" "{instance_name}" {{
           name             = "{instance_name}"
           database_version = "{db_version}"
